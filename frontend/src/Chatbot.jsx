@@ -1,8 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
+// import { Chart } from 'react-chartjs-2';
 
 const LANGUAGES = [
   { code: 'en', label: 'English' },
   { code: 'tr', label: 'Türkçe' }
+];
+
+const STOCKS = [
+  'AEFES', 'AFYON', 'AGHOL', 'AKBNK', 'AKSA', 'AKSEN', 'ALARK', 'ALBRK', 'ALGYO', 'ANACM', 'ARCLK', 'ASELS', 'AVOD', 'BERA', 'BIMAS', 'BJKAS', 'CCOLA', 'CEMAS', 'CEMTS', 'CLEBI', 'DEVA', 'DGKLB', 'DOAS', 'DOHOL', 'ECILC', 'EGEEN', 'EKGYO', 'ENJSA', 'ENKAI', 'EREGL', 'FENER', 'FROTO', 'GARAN', 'GEREL', 'GLYHO', 'GOLTS', 'GOZDE', 'GSDHO', 'GSRAY', 'GUBRF', 'GUSGR', 'HALKB', 'HEKTS', 'HLGYO', 'ICBCT', 'IEYHO', 'IHLAS', 'IHLGM', 'IPEKE', 'ISCTR', 'ISDMR', 'ISFIN', 'ITTFH', 'KARSN', 'KCHOL', 'KERVT', 'KONYA', 'KORDS', 'KOZAA', 'KOZAL', 'KRDMD', 'MAVI', 'METRO', 'MGROS', 'MPARK', 'NETAS', 'NTHOL', 'ODAS', 'OTKAR', 'PARSN', 'PETKM', 'PGSUS', 'POLHO', 'PRKME', 'SAHOL', 'SASA', 'SISE', 'SKBNK', 'SODA', 'SOKM', 'TAVHL', 'TCELL', 'THYAO', 'TKFEN', 'TMSN', 'TOASO', 'TRGYO', 'TRKCM', 'TSKB', 'TTKOM', 'TTRAK', 'TUKAS', 'TUPRS', 'ULKER', 'VAKBN', 'VERUS', 'VESTL', 'YATAS', 'YKBNK', 'ZOREN'
 ];
 
 const Chatbot = () => {
@@ -12,6 +17,8 @@ const Chatbot = () => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [language, setLanguage] = useState('en');
+  const [stock, setStock] = useState('BIMAS');
+  const [chartData, setChartData] = useState(null);
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -25,14 +32,20 @@ const Chatbot = () => {
     setMessages((msgs) => [...msgs, userMsg]);
     setInput('');
     setLoading(true);
+    setChartData(null);
     try {
-      const res = await fetch('http://localhost:8000/chat', {
+      const formData = new FormData();
+      formData.append('question', input);
+      formData.append('stock_code', stock);
+      const res = await fetch('http://localhost:8000/ask', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input, language })
+        body: formData
       });
       const data = await res.json();
-      setMessages((msgs) => [...msgs, { sender: 'bot', text: data.response }]);
+      if (data.chart) {
+        setChartData(data.chart);
+      }
+      setMessages((msgs) => [...msgs, { sender: 'bot', text: data.answer || data.error }]);
     } catch (err) {
       setMessages((msgs) => [...msgs, { sender: 'bot', text: 'Error: Could not reach server.' }]);
     }
@@ -56,6 +69,10 @@ const Chatbot = () => {
             <option key={lang.code} value={lang.code}>{lang.label}</option>
           ))}
         </select>
+        <label htmlFor="stock">Hisse: </label>
+        <select id="stock" value={stock} onChange={e => setStock(e.target.value)}>
+          {STOCKS.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
       </div>
       <div style={styles.chatArea}>
         {messages.map((msg, i) => (
@@ -64,6 +81,11 @@ const Chatbot = () => {
           </div>
         ))}
         <div ref={messagesEndRef} />
+        {chartData && (
+          <div style={{ marginTop: 20 }}>
+            <img src={`data:image/png;base64,${chartData}`} alt="Grafik" style={{ maxWidth: '100%' }} />
+          </div>
+        )}
       </div>
       <form style={styles.inputArea} onSubmit={handleSend}>
         <input
@@ -107,6 +129,8 @@ const styles = {
     padding: '8px 16px',
     background: '#f5f5f5',
     borderBottom: '1px solid #eee',
+    display: 'flex',
+    gap: 10,
   },
   chatArea: {
     flex: 1,

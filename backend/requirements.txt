@@ -2,4 +2,12 @@ fastapi
 uvicorn
 openai
 langdetect
-python-dotenv 
+python-dotenv
+pandas
+matplotlib
+requests
+yfinance
+python-multipart
+transformers
+torch
+sentence-transformers 

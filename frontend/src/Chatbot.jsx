@@ -1,112 +1,142 @@
 import React, { useState, useRef, useEffect } from 'react';
 // import { Chart } from 'react-chartjs-2';
 
-const LANGUAGES = [
-  { code: 'en', label: 'English' },
-  { code: 'tr', label: 'Türkçe' }
-];
-
-const STOCKS = [
-  'AEFES', 'AFYON', 'AGHOL', 'AKBNK', 'AKSA', 'AKSEN', 'ALARK', 'ALBRK', 'ALGYO', 'ANACM', 'ARCLK', 'ASELS', 'AVOD', 'BERA', 'BIMAS', 'BJKAS', 'CCOLA', 'CEMAS', 'CEMTS', 'CLEBI', 'DEVA', 'DGKLB', 'DOAS', 'DOHOL', 'ECILC', 'EGEEN', 'EKGYO', 'ENJSA', 'ENKAI', 'EREGL', 'FENER', 'FROTO', 'GARAN', 'GEREL', 'GLYHO', 'GOLTS', 'GOZDE', 'GSDHO', 'GSRAY', 'GUBRF', 'GUSGR', 'HALKB', 'HEKTS', 'HLGYO', 'ICBCT', 'IEYHO', 'IHLAS', 'IHLGM', 'IPEKE', 'ISCTR', 'ISDMR', 'ISFIN', 'ITTFH', 'KARSN', 'KCHOL', 'KERVT', 'KONYA', 'KORDS', 'KOZAA', 'KOZAL', 'KRDMD', 'MAVI', 'METRO', 'MGROS', 'MPARK', 'NETAS', 'NTHOL', 'ODAS', 'OTKAR', 'PARSN', 'PETKM', 'PGSUS', 'POLHO', 'PRKME', 'SAHOL', 'SASA', 'SISE', 'SKBNK', 'SODA', 'SOKM', 'TAVHL', 'TCELL', 'THYAO', 'TKFEN', 'TMSN', 'TOASO', 'TRGYO', 'TRKCM', 'TSKB', 'TTKOM', 'TTRAK', 'TUKAS', 'TUPRS', 'ULKER', 'VAKBN', 'VERUS', 'VESTL', 'YATAS', 'YKBNK', 'ZOREN'
-];
-
 const Chatbot = () => {
-  const [messages, setMessages] = useState([
-    { sender: 'bot', text: 'Hello! How can I help you? (Merhaba! Size nasıl yardımcı olabilirim?)' }
-  ]);
   const [input, setInput] = useState('');
+  const [messages, setMessages] = useState([
+    { sender: 'bot', text: 'Merhaba! Ben FINBOT. Size nasıl yardımcı olabilirim? Hangi şirketler mevcut diye sorabilirsiniz.' }
+  ]);
   const [loading, setLoading] = useState(false);
-  const [language, setLanguage] = useState('en');
-  const [stock, setStock] = useState('BIMAS');
-  const [chartData, setChartData] = useState(null);
+  const [language, setLanguage] = useState('tr');
   const messagesEndRef = useRef(null);
 
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    scrollToBottom();
   }, [messages]);
 
-  const handleSend = async (e) => {
-    e.preventDefault();
+  const handleSend = async () => {
     if (!input.trim()) return;
-    const userMsg = { sender: 'user', text: input };
-    setMessages((msgs) => [...msgs, userMsg]);
+
+    const userMessage = { sender: 'user', text: input };
+    setMessages(prev => [...prev, userMessage]);
     setInput('');
     setLoading(true);
-    setChartData(null);
+
     try {
       const formData = new FormData();
       formData.append('question', input);
-      formData.append('stock_code', stock);
-      const res = await fetch('http://localhost:8000/ask', {
+      formData.append('language', language);
+
+      console.log('Sending data:', { question: input, language: language });
+
+      const response = await fetch('http://localhost:8000/ask', {
         method: 'POST',
-        body: formData
+        body: formData,
       });
-      const data = await res.json();
-      if (data.chart) {
-        setChartData(data.chart);
+
+      console.log('Response status:', response.status);
+      console.log('Response headers:', response.headers);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Response error:', errorText);
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
-      setMessages((msgs) => [...msgs, { sender: 'bot', text: data.answer || data.error }]);
-    } catch (err) {
-      setMessages((msgs) => [...msgs, { sender: 'bot', text: 'Error: Could not reach server.' }]);
+
+      const data = await response.json();
+      console.log('Response data:', data);
+      
+      setMessages(prev => [...prev, { 
+        sender: 'bot', 
+        text: data.answer || data.error, 
+        chart: data.chart || null 
+      }]);
+    } catch (error) {
+      console.error('Fetch error:', error);
+      setMessages(prev => [...prev, { 
+        sender: 'bot', 
+        text: `Bir hata oluştu: ${error.message}`, 
+        chart: null 
+      }]);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const handleLanguageChange = (e) => {
-    setLanguage(e.target.value);
-    setMessages([
-      { sender: 'bot', text: e.target.value === 'en' ? 'Hello! How can I help you?' : 'Merhaba! Size nasıl yardımcı olabilirim?' }
-    ]);
+  const handleKeyPress = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
   };
 
   return (
     <div style={styles.container}>
-      <div style={styles.header}>ArGe Chatbot</div>
+      <div style={styles.header}>FINBOT</div>
       <div style={styles.langSelect}>
         <label htmlFor="lang">Language: </label>
-        <select id="lang" value={language} onChange={handleLanguageChange}>
-          {LANGUAGES.map((lang) => (
-            <option key={lang.code} value={lang.code}>{lang.label}</option>
-          ))}
-        </select>
-        <label htmlFor="stock">Hisse: </label>
-        <select id="stock" value={stock} onChange={e => setStock(e.target.value)}>
-          {STOCKS.map(s => <option key={s} value={s}>{s}</option>)}
+        <select
+          id="lang"
+          name="language"
+          value={language}
+          onChange={(e) => setLanguage(e.target.value)}
+          style={styles.select}
+        >
+          <option value="tr">Türkçe</option>
+          <option value="en">English</option>
         </select>
       </div>
       <div style={styles.chatArea}>
-        {messages.map((msg, i) => (
-          <div key={i} style={msg.sender === 'user' ? styles.userMsg : styles.botMsg}>
-            {msg.text}
+        {messages.map((msg, index) => (
+          <div key={index} style={msg.sender === 'user' ? styles.userMessage : styles.botMessage}>
+            <div style={styles.messageText}>{msg.text}</div>
+            {msg.chart && (
+              <img 
+                src={`data:image/png;base64,${msg.chart}`} 
+                alt="Chart" 
+                style={styles.chartImage} 
+              />
+            )}
           </div>
         ))}
-        <div ref={messagesEndRef} />
-        {chartData && (
-          <div style={{ marginTop: 20 }}>
-            <img src={`data:image/png;base64,${chartData}`} alt="Grafik" style={{ maxWidth: '100%' }} />
+        {loading && (
+          <div style={styles.botMessage}>
+            <div style={styles.messageText}>Düşünüyorum...</div>
           </div>
         )}
+        <div ref={messagesEndRef} />
       </div>
-      <form style={styles.inputArea} onSubmit={handleSend}>
+      <div style={styles.inputArea}>
         <input
-          style={styles.input}
           type="text"
+          id="messageInput"
+          name="message"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={language === 'en' ? 'Type your message...' : 'Mesajınızı yazın...'}
+          onKeyPress={handleKeyPress}
+          placeholder="Mesajınızı yazın..."
+          style={styles.input}
           disabled={loading}
         />
-        <button style={styles.button} type="submit" disabled={loading || !input.trim()}>
-          {loading ? '...' : (language === 'en' ? 'Send' : 'Gönder')}
+        <button 
+          onClick={handleSend} 
+          style={styles.sendButton}
+          disabled={loading || !input.trim()}
+        >
+          Gönder
         </button>
-      </form>
+      </div>
     </div>
   );
 };
 
 const styles = {
   container: {
-    maxWidth: 400,
+    maxWidth: 600,
     margin: '40px auto',
     background: '#fff',
     borderRadius: 12,
@@ -114,7 +144,7 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     fontFamily: 'Segoe UI, sans-serif',
-    minHeight: 500,
+    minHeight: 600,
     overflow: 'hidden',
   },
   header: {
@@ -131,17 +161,26 @@ const styles = {
     borderBottom: '1px solid #eee',
     display: 'flex',
     gap: 10,
+    alignItems: 'center',
+  },
+  select: {
+    padding: '8px 12px',
+    borderRadius: 8,
+    border: '1px solid #ccc',
+    fontSize: 15,
+    cursor: 'pointer',
   },
   chatArea: {
     flex: 1,
     padding: 16,
     overflowY: 'auto',
+    maxHeight: 400,
     background: '#f9f9f9',
     display: 'flex',
     flexDirection: 'column',
     gap: 8,
   },
-  userMsg: {
+  userMessage: {
     alignSelf: 'flex-end',
     background: '#1976d2',
     color: '#fff',
@@ -149,8 +188,9 @@ const styles = {
     borderRadius: '16px 16px 0 16px',
     maxWidth: '80%',
     fontSize: 15,
+    wordWrap: 'break-word',
   },
-  botMsg: {
+  botMessage: {
     alignSelf: 'flex-start',
     background: '#e3eafc',
     color: '#222',
@@ -158,6 +198,17 @@ const styles = {
     borderRadius: '16px 16px 16px 0',
     maxWidth: '80%',
     fontSize: 15,
+    wordWrap: 'break-word',
+  },
+  messageText: {
+    marginBottom: '5px',
+    whiteSpace: 'pre-wrap',
+  },
+  chartImage: {
+    maxWidth: '100%',
+    height: 'auto',
+    borderRadius: '5px',
+    marginTop: '5px',
   },
   inputArea: {
     display: 'flex',
@@ -172,8 +223,9 @@ const styles = {
     border: '1px solid #ccc',
     fontSize: 15,
     marginRight: 8,
+    outline: 'none',
   },
-  button: {
+  sendButton: {
     padding: '0 18px',
     borderRadius: 8,
     border: 'none',

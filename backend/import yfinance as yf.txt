@@ -1,0 +1,5 @@
+import yfinance as yf
+ticker = yf.Ticker("CCOLA.IS")
+hist = ticker.history(period="1y")
+print(hist)
+print("Satır sayısı:", len(hist))

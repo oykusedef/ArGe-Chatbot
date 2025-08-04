@@ -1,13 +1,65 @@
 import React, { useState, useRef, useEffect } from 'react';
-// import { Chart } from 'react-chartjs-2';
+
+// URL'leri tıklanabilir link haline getiren fonksiyon
+const formatMessageWithLinks = (text) => {
+  if (!text) return text;
+  
+  // URL'leri tespit edip JSX elementlerine dönüştür
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const parts = text.split(urlRegex);
+  
+  return parts.map((part, index) => {
+    if (urlRegex.test(part)) {
+      return (
+        <a 
+          key={index}
+          href={part} 
+          target="_blank" 
+          rel="noopener noreferrer"
+          style={{ color: '#1976d2', textDecoration: 'underline' }}
+        >
+          {part}
+        </a>
+      );
+    }
+    return part;
+  });
+};
+
+// Yardımcı: Haber mesajını parse eden fonksiyon
+function parseNewsList(text) {
+  // Her haber satırı '1.', '2.', ... ile başlar
+  const newsRegex = /\n(\d+)\. /g;
+  const parts = text.split(newsRegex);
+  // İlk parça başlık, sonra [num, haber, num, haber, ...]
+  let news = [];
+  for (let i = 2; i < parts.length; i += 2) {
+    news.push(parts[i]);
+  }
+  return news;
+}
 
 const Chatbot = () => {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([
-    { sender: 'bot', text: 'Merhaba! Ben FINBOT. Size nasıl yardımcı olabilirim? Hangi şirketler mevcut diye sorabilirsiniz.' }
+    { sender: 'bot', text: `Merhaba! Ben FINBOT.
+
+🤖 FINBOT Size Nasıl Yardımcı Olabilir? Hangi şirketler mevcut diye sorabilirsiniz.
+
+📈 Güncel fiyat: 'ARCLK güncel fiyat'
+📊 Grafik: 'ARCLK grafik' veya 'ARCLK 3 ay grafik'
+🔮 Tahmin: 'ARCLK tahmin' veya 'ARCLK forecast'
+📰 Sentiment: 'ASELS medya analizi' veya 'ASELS haber analizi'
+💼 Yatırım tavsiyesi: '1000 TL ne alayım' veya 'portföy önerisi'
+📋 Hisse listesi: 'Hangi şirketler mevcut'
+💡 Grafik süreleri: 1 ay, 3 ay, 6 ay, 1 yıl
+💡 Tahmin yöntemleri: Prophet, ARIMA, LSTM
+💡 Risk profilleri: Düşük, Orta, Yüksek
+📰 Sentiment analizi: Son 7 günün haberleri` }
   ]);
   const [loading, setLoading] = useState(false);
   const [language, setLanguage] = useState('tr');
+
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -27,36 +79,71 @@ const Chatbot = () => {
     setLoading(true);
 
     try {
-      const formData = new FormData();
-      formData.append('question', input);
-      formData.append('language', language);
+      // Türk borsa haberleri için özel kontrol
+      const inputLower = input.toLowerCase();
+      if (inputLower.includes('türk borsa haberleri') || 
+          inputLower.includes('güncel haberler') || 
+          inputLower.includes('borsa haberleri') ||
+          inputLower.includes('turkish news') ||
+          inputLower.includes('market news')) {
+        
+        const response = await fetch('http://localhost:8000/turkish-news');
+        const data = await response.json();
+        
+        if (data.success && data.news.length > 0) {
+          let newsText = language === 'tr' ? 
+            `📰 GÜNCEL TÜRK BORSA HABERLERİ (${data.total} haber):\n\n` :
+            `📰 CURRENT TURKISH MARKET NEWS (${data.total} articles):\n\n`;
+          
+          data.news.slice(0, 5).forEach((article, index) => {
+            newsText += `${index + 1}. ${article.title}\n`;
+            newsText += `   📰 ${article.source} | ${article.published_at?.slice(0, 10) || 'Tarih bilgisi yok'}\n`;
+            if (article.description) {
+              newsText += `   📝 ${article.description.slice(0, 100)}...\n`;
+            }
+            newsText += '\n';
+          });
+          
+          setMessages(prev => [...prev, { 
+            sender: 'bot', 
+            text: newsText, 
+            chart: null 
+          }]);
+        } else {
+          setMessages(prev => [...prev, { 
+            sender: 'bot', 
+            text: language === 'tr' ? 
+              '❌ Haber bulunamadı. Lütfen daha sonra tekrar deneyin.' :
+              '❌ No news found. Please try again later.', 
+            chart: null 
+          }]);
+        }
+      } else {
+        // Normal soru-cevap işlemi
+        const formData = new FormData();
+        formData.append('question', input);
+        formData.append('language', language);
 
-      console.log('Sending data:', { question: input, language: language });
+        const response = await fetch('http://localhost:8000/ask', {
+          method: 'POST',
+          body: formData,
+        });
 
-      const response = await fetch('http://localhost:8000/ask', {
-        method: 'POST',
-        body: formData,
-      });
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('Response error:', errorText);
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
 
-      console.log('Response status:', response.status);
-      console.log('Response headers:', response.headers);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Response error:', errorText);
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
+        const data = await response.json();
+        
+        setMessages(prev => [...prev, { 
+          sender: 'bot', 
+          text: data.answer || data.error, 
+          chart: data.chart || null 
+        }]);
       }
-
-      const data = await response.json();
-      console.log('Response data:', data);
-      
-      setMessages(prev => [...prev, { 
-        sender: 'bot', 
-        text: data.answer || data.error, 
-        chart: data.chart || null 
-      }]);
     } catch (error) {
-      console.error('Fetch error:', error);
       setMessages(prev => [...prev, { 
         sender: 'bot', 
         text: `Bir hata oluştu: ${error.message}`, 
@@ -73,6 +160,24 @@ const Chatbot = () => {
       handleSend();
     }
   };
+
+  // Bot mesajı haber listesi ise özel render
+  function renderBotMessage(msg, index) {
+    // Haber mesajı mı?
+    if (msg.text && /\n1\. /.test(msg.text) && /HABERLERİ|NEWS/.test(msg.text)) {
+      const newsList = parseNewsList(msg.text);
+      return (
+        <div>
+          <div>{msg.text.split('\n1. ')[0]}</div>
+          <ul style={{paddingLeft: 18}}>
+            {newsList.map((n, i) => <li key={i} style={{marginBottom: 8}}>{formatMessageWithLinks(n)}</li>)}
+          </ul>
+        </div>
+      );
+    }
+    // Normal bot mesajı
+    return formatMessageWithLinks(msg.text);
+  }
 
   return (
     <div style={styles.container}>
@@ -93,7 +198,9 @@ const Chatbot = () => {
       <div style={styles.chatArea}>
         {messages.map((msg, index) => (
           <div key={index} style={msg.sender === 'user' ? styles.userMessage : styles.botMessage}>
-            <div style={styles.messageText}>{msg.text}</div>
+            <div style={styles.messageText}>
+              {msg.sender === 'bot' ? renderBotMessage(msg, index) : msg.text}
+            </div>
             {msg.chart && (
               <img 
                 src={`data:image/png;base64,${msg.chart}`} 

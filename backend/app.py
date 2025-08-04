@@ -19,8 +19,11 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 import random
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
-import torch
+from newsapi import NewsApiClient
+import json
+from typing import List, Dict, Tuple
+import http.client
+import urllib.parse
 
 # API Keys - Ücretsiz planlar için
 FINNHUB_API_KEY = "d25p1d9r01qhge4dmh5gd25p1d9r01qhge4dmh60"
@@ -33,8 +36,487 @@ FINNHUB_API_KEYS = [
     "d253na9r01qns40d15hgd253na9r01qns40d15i0"   # Yedek 2
 ]
 
-# Alpha Vantage API Key (Ücretsiz: 500 istek/gün)
-ALPHA_VANTAGE_API_KEY = "YOUR_ALPHA_VANTAGE_API_KEY"  # 🔑 ALPHA VANTAGE API ANAHTARINIZI BURAYA YAZIN
+
+# News API Key (Ücretsiz: 100 istek/gün)
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "4VPDfIzFhUWoRyzmwtWso4rREi9fsIw18CSOcsx9")  # 🔑 NEWS API ANAHTARINIZI BURAYA YAZIN
+
+# Türkçe sentiment analizi için anahtar kelimeler
+TURKISH_POSITIVE_WORDS = [
+    # Finansal pozitif kelimeler
+    'artış', 'yükseliş', 'kazanç', 'kâr', 'olumlu', 'iyi', 'güzel', 'başarılı',
+    'büyüme', 'gelişme', 'ilerleme', 'yükselme', 'artma', 'çıkış', 'yükseliş',
+    'olumlu', 'mükemmel', 'harika', 'süper', 'güçlü', 'sağlam', 'stabil',
+    'güvenilir', 'kaliteli', 'profesyonel', 'yenilikçi', 'modern', 'teknolojik',
+    'rekabetçi', 'dinamik', 'esnek', 'sürdürülebilir', 'verimli', 'etkili',
+    'stratejik', 'vizyoner', 'lider', 'pazar lideri', 'sektör lideri',
+    'yüksek performans', 'güçlü büyüme', 'olumlu trend', 'iyi sonuç',
+    'başarılı proje', 'yeni ürün', 'inovasyon', 'teknoloji', 'dijitalleşme',
+    'sürdürülebilir büyüme', 'finansal güç', 'nakit akışı', 'temettü',
+    'yatırım', 'genişleme', 'pazar payı', 'müşteri memnuniyeti', 'kalite',
+    'sertifika', 'ödül', 'başarı', 'hedef', 'plan', 'strateji', 'vizyon'
+]
+
+TURKISH_NEGATIVE_WORDS = [
+    # Finansal negatif kelimeler
+    'düşüş', 'kayıp', 'zarar', 'olumsuz', 'kötü', 'kriz', 'problem', 'sorun',
+    'düşme', 'azalma', 'kaybetme', 'başarısızlık', 'başarısız', 'zayıf', 'kırılgan',
+    'riskli', 'belirsiz', 'kararsız', 'durgun', 'yavaş', 'zayıf', 'kötüleşme',
+    'düşüş', 'çöküş', 'iflas', 'borç', 'kayıp', 'zarar', 'olumsuz', 'negatif',
+    'düşük performans', 'zayıf büyüme', 'olumsuz trend', 'kötü sonuç',
+    'başarısız proje', 'güvenlik açığı', 'veri sızıntısı', 'hack', 'siber saldırı',
+    'rekabet baskısı', 'pazar kaybı', 'müşteri kaybı', 'şikayet', 'dava',
+    'ceza', 'yaptırım', 'denetim', 'uyarı', 'kınama', 'soruşturma', 'araştırma',
+    'şüphe', 'güvensizlik', 'belirsizlik', 'risk', 'tehlike', 'tehdit', 'korku',
+    'endişe', 'kaygı', 'stres', 'baskı', 'zorluk', 'engel', 'obstacle', 'barrier'
+]
+
+# Duygu kategorileri için kelimeler
+EMOTION_CATEGORIES = {
+    'güven': ['güven', 'güvenilir', 'güvenli', 'sağlam', 'stabil', 'sürdürülebilir', 'kaliteli'],
+    'korku': ['korku', 'endişe', 'kaygı', 'tehlike', 'risk', 'tehdit', 'belirsizlik'],
+    'umut': ['umut', 'gelecek', 'potansiyel', 'fırsat', 'vizyon', 'hedef', 'plan'],
+    'hayal kırıklığı': ['hayal kırıklığı', 'düş kırıklığı', 'başarısız', 'kötü', 'olumsuz'],
+    'coşku': ['coşku', 'heyecan', 'harika', 'mükemmel', 'süper', 'inanılmaz'],
+    'öfke': ['öfke', 'kızgın', 'sinir', 'şikayet', 'dava', 'ceza', 'yaptırım']
+}
+
+def analyze_turkish_sentiment_detailed(text: str) -> Dict:
+    """Türkçe metin için detaylı sentiment analizi"""
+    text_lower = text.lower()
+    
+    # Pozitif ve negatif kelime sayısı
+    positive_count = sum(1 for word in TURKISH_POSITIVE_WORDS if word in text_lower)
+    negative_count = sum(1 for word in TURKISH_NEGATIVE_WORDS if word in text_lower)
+    
+    # Toplam kelime sayısı
+    total_words = len(text.split())
+    
+    if total_words == 0:
+        return {
+            'sentiment_score': 0.0,
+            'sentiment_label': 'Nötr',
+            'confidence': 0.0,
+            'emotions': {},
+            'key_phrases': [],
+            'word_count': 0
+        }
+    
+    # Sentiment skoru (-1 ile 1 arası)
+    sentiment_score = (positive_count - negative_count) / total_words
+    sentiment_score = max(-1.0, min(1.0, sentiment_score))
+    
+    # Güven skoru (kelime sayısına göre)
+    confidence = min(1.0, (positive_count + negative_count) / max(1, total_words * 0.1))
+    
+    # Duygu analizi
+    emotions = {}
+    for emotion, words in EMOTION_CATEGORIES.items():
+        emotion_count = sum(1 for word in words if word in text_lower)
+        if emotion_count > 0:
+            emotions[emotion] = emotion_count
+    
+    # Anahtar kelimeleri çıkar
+    key_phrases = []
+    for word in TURKISH_POSITIVE_WORDS + TURKISH_NEGATIVE_WORDS:
+        if word in text_lower:
+            key_phrases.append(word)
+    
+    # Sentiment etiketi
+    if sentiment_score > 0.1:
+        sentiment_label = 'Olumlu'
+    elif sentiment_score < -0.1:
+        sentiment_label = 'Olumsuz'
+    else:
+        sentiment_label = 'Nötr'
+    
+    return {
+        'sentiment_score': sentiment_score,
+        'sentiment_label': sentiment_label,
+        'confidence': confidence,
+        'emotions': emotions,
+        'key_phrases': key_phrases[:5],  # İlk 5 anahtar kelime
+        'word_count': total_words,
+        'positive_words': positive_count,
+        'negative_words': negative_count
+    }
+
+def analyze_turkish_sentiment(text: str) -> float:
+    """Türkçe metin için sentiment analizi (geriye uyumluluk için)"""
+    result = analyze_turkish_sentiment_detailed(text)
+    return result['sentiment_score']
+
+def get_news_sentiment(company_name: str, stock_code: str) -> Dict:
+    """Şirket için haber sentiment analizi"""
+    try:
+        # Önce The News API'den Türkçe haberleri al
+        turkish_news = get_turkish_stock_news_by_company(company_name, stock_code)
+        
+        all_news = []
+        
+        # The News API'den gelen haberleri işle
+        if turkish_news['success'] and turkish_news['news']:
+            for article in turkish_news['news']:
+                # The News API formatını News API formatına çevir
+                formatted_article = {
+                    'title': article.get('title', ''),
+                    'description': article.get('description', ''),
+                    'source': {'name': article.get('source', 'Bilinmeyen')},
+                    'publishedAt': article.get('published_at', ''),
+                    'url': article.get('url', '')
+                }
+                all_news.append(formatted_article)
+            print(f"Found {len(turkish_news['news'])} Turkish articles from The News API")
+        
+        # Eğer The News API'den yeterli haber yoksa, News API'yi de dene
+        if len(all_news) < 5:
+            newsapi = NewsApiClient(api_key=NEWS_API_KEY)
+            
+            # Daha geniş arama terimleri oluştur
+            search_terms = [company_name, stock_code]
+            
+            # Şirket adına göre ek terimler ekle
+            if stock_code == 'AKBNK':
+                search_terms.extend(['Akbank', 'akbank', 'AKBANK', 'Türkiye bankacılık', 'banka', 'finans'])
+            elif stock_code == 'GARAN':
+                search_terms.extend(['Garanti', 'garanti', 'GARANTI', 'Türkiye bankacılık', 'banka', 'finans'])
+            elif stock_code == 'ISCTR':
+                search_terms.extend(['İş Bankası', 'İşbank', 'isbank', 'ISBANK', 'Türkiye bankacılık', 'banka', 'finans'])
+            elif stock_code == 'YKBNK':
+                search_terms.extend(['Yapı Kredi', 'Yapıkredi', 'yapikredi', 'YAPIKREDI', 'Türkiye bankacılık', 'banka', 'finans'])
+            elif stock_code == 'VAKBN':
+                search_terms.extend(['Vakıfbank', 'vakifbank', 'VAKIFBANK', 'Türkiye bankacılık', 'banka', 'finans'])
+            elif stock_code == 'THYAO':
+                search_terms.extend(['Türk Hava Yolları', 'THY', 'thy', 'havacılık', 'uçak', 'havayolu'])
+            elif stock_code == 'TCELL':
+                search_terms.extend(['Turkcell', 'turkcell', 'TURKCELL', 'telekomünikasyon', 'mobil', 'iletişim'])
+            elif stock_code == 'TUPRS':
+                search_terms.extend(['Tüpraş', 'tupras', 'TUPRAS', 'petrol', 'rafineri', 'enerji'])
+            elif stock_code == 'ASELS':
+                search_terms.extend(['Aselsan', 'aselsan', 'ASELSAN', 'savunma', 'elektronik', 'teknoloji'])
+            elif stock_code == 'EREGL':
+                search_terms.extend(['Ereğli', 'eregli', 'EREGLI', 'demir çelik', 'çelik', 'metal'])
+            elif stock_code == 'KCHOL':
+                search_terms.extend(['Koç Holding', 'Koç', 'koc', 'KOC', 'holding', 'sanayi'])
+            elif stock_code == 'SAHOL':
+                search_terms.extend(['Sabancı Holding', 'Sabancı', 'sabanci', 'SABANCI', 'holding', 'sanayi'])
+            elif stock_code == 'FROTO':
+                search_terms.extend(['Ford Otosan', 'Ford', 'ford', 'FORD', 'otomotiv', 'araç'])
+            elif stock_code == 'TOASO':
+                search_terms.extend(['Toyota Otosan', 'Toyota', 'toyota', 'TOYOTA', 'otomotiv', 'araç'])
+            elif stock_code == 'BIMAS':
+                search_terms.extend(['BİM', 'bim', 'BIM', 'market', 'perakende', 'gıda'])
+            elif stock_code == 'MGROS':
+                search_terms.extend(['Migros', 'migros', 'MIGROS', 'market', 'perakende', 'gıda'])
+            elif stock_code == 'SASA':
+                search_terms.extend(['Sasa Polyurethan', 'Sasa Polyurethan A.Ş.', 'SASA Polyurethan', 'Sasa kimya', 'Sasa plastik', 'Sasa polietilen'])
+            elif stock_code == 'SISE':
+                search_terms.extend(['Şişe Cam', 'Şişe', 'sise', 'SISE', 'cam', 'cam ürünleri'])
+            elif stock_code == 'CCOLA':
+                search_terms.extend(['Coca Cola', 'Coca-Cola', 'coca cola', 'COCA COLA', 'içecek', 'meşrubat'])
+            elif stock_code == 'PGSUS':
+                search_terms.extend(['Pegasus', 'pegasus', 'PEGASUS', 'havacılık', 'uçak', 'havayolu'])
+            else:
+                # Genel terimler ekle
+                search_terms.extend([company_name.lower(), company_name.upper(), company_name.title()])
+            
+            for term in search_terms:
+                try:
+                    # Son 7 günün haberlerini al
+                    news = newsapi.get_everything(
+                        q=term,
+                        language='tr',
+                        sort_by='publishedAt',
+                        from_param=(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d'),
+                        page_size=20
+                    )
+                    
+                    if news['status'] == 'ok' and news['articles']:
+                        # Haberleri filtrele - başlıkta şirket adı geçenleri öncelikle al
+                        filtered_articles = []
+                        for article in news['articles']:
+                            title = article.get('title', '').lower()
+                            description = article.get('description', '').lower()
+                            
+                            # Şirket adı veya hisse kodu başlıkta geçiyorsa öncelikli
+                            if (company_name.lower() in title or 
+                                stock_code.lower() in title or
+                                company_name.lower() in description or 
+                                stock_code.lower() in description):
+                                filtered_articles.append(article)
+                        
+                        if filtered_articles:
+                            all_news.extend(filtered_articles)
+                            print(f"Found {len(filtered_articles)} relevant articles for term: {term}")
+                        else:
+                            # Eğer filtrelenmiş haber yoksa, tüm haberleri al ama log'la
+                            all_news.extend(news['articles'])
+                            print(f"Found {len(news['articles'])} articles for term: {term} (no exact match)")
+                except Exception as e:
+                    print(f"News API error for {term}: {e}")
+                    continue
+        
+        if not all_news:
+            # Eğer Türkçe haber bulunamazsa İngilizce dene
+            for term in search_terms[:5]:  # İlk 5 terimi dene
+                try:
+                    news = newsapi.get_everything(
+                        q=term,
+                        language='en',
+                        sort_by='publishedAt',
+                        from_param=(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d'),
+                        page_size=20
+                    )
+                    
+                    if news['status'] == 'ok' and news['articles']:
+                        all_news.extend(news['articles'])
+                        print(f"Found {len(news['articles'])} English articles for term: {term}")
+                except Exception as e:
+                    print(f"News API error for {term} (EN): {e}")
+                    continue
+        
+        if not all_news:
+            return {
+                'sentiment_score': 0.0,
+                'sentiment_label': 'Nötr',
+                'confidence': 0.0,
+                'news_count': 0,
+                'positive_news': 0,
+                'negative_news': 0,
+                'neutral_news': 0,
+                'top_emotions': [],
+                'top_key_phrases': [],
+                'recent_news': [],
+                'error': 'Haber bulunamadı'
+            }
+        
+        # Haberleri son kez filtrele - tamamen alakasız olanları çıkar
+        filtered_all_news = []
+        for article in all_news:
+            title = article.get('title', '').lower()
+            description = article.get('description', '').lower()
+            
+            # Şirket adı veya hisse kodu geçmiyorsa ve tamamen alakasızsa çıkar
+            if (company_name.lower() not in title and 
+                stock_code.lower() not in title and
+                company_name.lower() not in description and 
+                stock_code.lower() not in description):
+                # Eğer NVIDIA, Apple, Microsoft gibi tamamen farklı şirketler geçiyorsa çıkar
+                irrelevant_keywords = ['nvidia', 'apple', 'microsoft', 'google', 'amazon', 'tesla', 'meta', 'netflix']
+                if any(keyword in title or keyword in description for keyword in irrelevant_keywords):
+                    continue
+            
+            filtered_all_news.append(article)
+        
+        print(f"Filtered {len(all_news)} articles down to {len(filtered_all_news)} relevant articles")
+        
+        if not filtered_all_news:
+            return {
+                'sentiment_score': 0.0,
+                'sentiment_label': 'Nötr',
+                'confidence': 0.0,
+                'news_count': 0,
+                'positive_news': 0,
+                'negative_news': 0,
+                'neutral_news': 0,
+                'top_emotions': [],
+                'top_key_phrases': [],
+                'recent_news': [],
+                'error': 'İlgili haber bulunamadı'
+            }
+        
+        # Detaylı sentiment analizi
+        detailed_sentiments = []
+        positive_count = 0
+        negative_count = 0
+        neutral_count = 0
+        recent_news = []
+        all_emotions = {}
+        all_key_phrases = []
+        total_confidence = 0.0
+        
+        for article in filtered_all_news[:10]:  # Son 10 haberi analiz et
+            title = article.get('title', '')
+            description = article.get('description', '')
+            content = f"{title} {description}"
+            
+            # Detaylı Türkçe sentiment analizi
+            detailed_sentiment = analyze_turkish_sentiment_detailed(content)
+            detailed_sentiments.append(detailed_sentiment)
+            
+            # Kategorize et
+            if detailed_sentiment['sentiment_score'] > 0.1:
+                positive_count += 1
+            elif detailed_sentiment['sentiment_score'] < -0.1:
+                negative_count += 1
+            else:
+                neutral_count += 1
+            
+            # Duyguları topla
+            for emotion, count in detailed_sentiment['emotions'].items():
+                all_emotions[emotion] = all_emotions.get(emotion, 0) + count
+            
+            # Anahtar kelimeleri topla
+            all_key_phrases.extend(detailed_sentiment['key_phrases'])
+            total_confidence += detailed_sentiment['confidence']
+            
+            # Son haberler listesi
+            recent_news.append({
+                'title': title,
+                'source': article.get('source', {}).get('name', 'Bilinmeyen'),
+                'published_at': article.get('publishedAt', ''),
+                'sentiment': detailed_sentiment['sentiment_score'],
+                'sentiment_label': detailed_sentiment['sentiment_label'],
+                'confidence': detailed_sentiment['confidence'],
+                'emotions': detailed_sentiment['emotions'],
+                'key_phrases': detailed_sentiment['key_phrases'],
+                'url': article.get('url', '')
+            })
+        
+        # Ortalama sentiment skoru
+        avg_sentiment = sum(s['sentiment_score'] for s in detailed_sentiments) / len(detailed_sentiments) if detailed_sentiments else 0.0
+        avg_confidence = total_confidence / len(detailed_sentiments) if detailed_sentiments else 0.0
+        
+        # Sentiment etiketi
+        if avg_sentiment > 0.1:
+            sentiment_label = 'Olumlu'
+        elif avg_sentiment < -0.1:
+            sentiment_label = 'Olumsuz'
+        else:
+            sentiment_label = 'Nötr'
+        
+        # En yaygın duyguları sırala
+        top_emotions = sorted(all_emotions.items(), key=lambda x: x[1], reverse=True)[:3]
+        
+        # En yaygın anahtar kelimeleri sırala
+        from collections import Counter
+        key_phrase_counts = Counter(all_key_phrases)
+        top_key_phrases = key_phrase_counts.most_common(5)
+        
+        return {
+            'sentiment_score': avg_sentiment,
+            'sentiment_label': sentiment_label,
+            'confidence': avg_confidence,
+            'news_count': len(filtered_all_news),
+            'positive_news': positive_count,
+            'negative_news': negative_count,
+            'neutral_news': neutral_count,
+            'top_emotions': top_emotions,
+            'top_key_phrases': top_key_phrases,
+            'recent_news': recent_news[:10],  # Son 10 haber
+            'error': None
+        }
+        
+    except Exception as e:
+        print(f"Error in get_news_sentiment: {e}")
+        return {
+            'sentiment_score': 0.0,
+            'sentiment_label': 'Nötr',
+            'confidence': 0.0,
+            'news_count': 0,
+            'positive_news': 0,
+            'negative_news': 0,
+            'neutral_news': 0,
+            'top_emotions': [],
+            'top_key_phrases': [],
+            'recent_news': [],
+            'error': f'Haber analizi hatası: {str(e)}'
+        }
+
+def get_turkish_stock_news():
+    """The News API'den Türkçe borsa haberlerini al"""
+    try:
+        conn = http.client.HTTPSConnection('api.thenewsapi.com')
+        
+        params = urllib.parse.urlencode({
+            'api_token': '4VPDfIzFhUWoRyzmwtWso4rREi9fsIw18CSOcsx9',  # thenewsapi.com anahtarı
+            'categories': 'business,tech',
+            'limit': 3,  # Ücretsiz plan limiti
+            'language': 'tr',        # Türkçe haberleri filtrelemek için
+            'locale': 'tr',          # Türkiye kaynaklı haberler için
+            'search': 'borsa'        # Türk hisse/borsa araması
+        })
+        
+        conn.request('GET', '/v1/news/all?{}'.format(params))
+        res = conn.getresponse()
+        data = res.read()
+        
+        # JSON verisini parse et
+        news_data = json.loads(data.decode('utf-8'))
+        
+        # API yanıtını kontrol et (status yerine data varlığını kontrol et)
+        if news_data.get('data') and len(news_data.get('data', [])) > 0:
+            return {
+                'success': True,
+                'news': news_data.get('data', []),
+                'total': len(news_data.get('data', []))
+            }
+        else:
+            return {
+                'success': False,
+                'error': 'Haber bulunamadı',
+                'news': [],
+                'total': 0
+            }
+            
+    except Exception as e:
+        print(f"Türk borsa haberleri alınırken hata: {e}")
+        return {
+            'success': False,
+            'error': str(e),
+            'news': [],
+            'total': 0
+        }
+
+def get_turkish_stock_news_by_company(company_name: str, stock_code: str):
+    """Belirli bir şirket için Türkçe borsa haberlerini al"""
+    try:
+        conn = http.client.HTTPSConnection('api.thenewsapi.com')
+        
+        # Şirket adı ve hisse kodu ile arama
+        search_terms = [company_name, stock_code]
+        
+        all_news = []
+        
+        for term in search_terms:
+            # SASA için daha spesifik arama
+            if stock_code == 'SASA':
+                search_query = f'"{term}"'  # Tırnak içinde arama yap
+            else:
+                search_query = term
+                
+            params = urllib.parse.urlencode({
+                'api_token': '4VPDfIzFhUWoRyzmwtWso4rREi9fsIw18CSOcsx9',
+                'categories': 'business,tech',
+                'limit': 3,  # Ücretsiz plan limiti
+                'language': 'tr',
+                'locale': 'tr',
+                'search': search_query
+            })
+            
+            conn.request('GET', '/v1/news/all?{}'.format(params))
+            res = conn.getresponse()
+            data = res.read()
+            
+            news_data = json.loads(data.decode('utf-8'))
+            
+            # API yanıtını kontrol et
+            if news_data.get('data') and len(news_data.get('data', [])) > 0:
+                all_news.extend(news_data.get('data', []))
+        
+        return {
+            'success': len(all_news) > 0,
+            'news': all_news,
+            'total': len(all_news)
+        }
+        
+    except Exception as e:
+        print(f"Şirket haberleri alınırken hata: {e}")
+        return {
+            'success': False,
+            'error': str(e),
+            'news': [],
+            'total': 0
+        }
 
 # Genişletilmiş BIST hisseleri listesi (BIST30 + BIST50 + popüler hisseler)
 BIST_STOCKS = [
@@ -52,8 +534,71 @@ BIST_STOCKS = [
     'NTHOL', 'ODAS', 'OTKAR', 'OYAKC', 'PENTA', 'POLHO', 'PRKAB', 'PRKME', 
     'QUAGR', 'SAFKN', 'SELEC', 'SELGD', 'SMRTG', 'SNGYO', 'SOKM', 'TAVHL', 
     'TKNSA', 'TRGYO', 'TSKB', 'TTKOM', 'TTRAK', 'ULKER', 'VESBE', 'VESTL', 
-    'YATAS', 'YUNSA', 'ZRGYO'
+    'YATAS', 'YUNSA', 'ZRGYO','FROTO'
 ]
+
+# Şirket isimlerini hisse kodlarına eşleyen sözlük
+COMPANY_TO_CODE = {
+    # BIST30 şirketleri
+    'akbank': 'AKBNK', 'arcelik': 'ARCLK', 'aselsan': 'ASELS', 'bim': 'BIMAS',
+    'ekonomi': 'EKGYO', 'enka': 'ENKAI', 'eupwr': 'EUPWR', 'ford otosan': 'FROTO',
+    'garanti': 'GARAN', 'gubre fabrikalari': 'GUBRF', 'hektas': 'HEKTS', 'isbank': 'ISCTR',
+    'koç holding': 'KCHOL', 'kardemir': 'KRDMD', 'koza altin': 'KOZAA', 'koza anadolu': 'KOZAL',
+    'migros': 'MGROS', 'pegasus': 'PGSUS', 'sabanci holding': 'SAHOL', 'sasa': 'SASA',
+    'sise cam': 'SISE', 'turkcell': 'TCELL', 'turk hava yollari': 'THYAO', 'turk telekom': 'TKFEN',
+    'toyota otosan': 'TOASO', 'tüpras': 'TUPRS', 'vakifbank': 'VAKBN', 'yapi kredi': 'YKBNK',
+    'coca cola': 'CCOLA', 'eregli demir celik': 'EREGL', 'soda sanayi': 'SODA', 'petkim': 'PETKM',
+    
+    # BIST50 ek şirketleri
+    'ahlat': 'AHLAT', 'aksa': 'AKSA', 'alarko': 'ALARK', 'albayrak': 'ALBRK',
+    'alarko gayrimenkul': 'ALGYO', 'anadolu cam': 'ANACM', 'bascm': 'BASCM', 'bera': 'BERA',
+    'brisa': 'BRISA', 'bryat': 'BRYAT', 'cemas': 'CEMAS', 'cemts': 'CEMTS',
+    'cimsa': 'CIMSA', 'dogus holding': 'DOHOL', 'ege enerji': 'EGEEN', 'enerjisa': 'ENJSA',
+    'fmizp': 'FMIZP', 'gesan': 'GESAN', 'glyho': 'GLYHO', 'halkbank': 'HALKB',
+    'hateks': 'HATEK', 'indes': 'INDES', 'ipek': 'IPEKE', 'karel': 'KAREL',
+    'karsan': 'KARSN', 'kervn': 'KERVN', 'kervansaray': 'KERVT', 'kontr': 'KONTR',
+    'konya': 'KONYA', 'logo': 'LOGO', 'macko': 'MACKO', 'netas': 'NETAS',
+    'nthol': 'NTHOL', 'odas': 'ODAS', 'otokar': 'OTKAR', 'oyak': 'OYAKC',
+    'penta': 'PENTA', 'polisan': 'POLHO', 'prkab': 'PRKAB', 'prkme': 'PRKME',
+    'quagr': 'QUAGR', 'safkn': 'SAFKN', 'selec': 'SELEC', 'selgd': 'SELGD',
+    'smrtg': 'SMRTG', 'sngyo': 'SNGYO', 'sokm': 'SOKM', 'tav': 'TAVHL',
+    'tknsa': 'TKNSA', 'trgyo': 'TRGYO', 'tskb': 'TSKB', 'ttkom': 'TTKOM',
+    'ttrak': 'TTRAK', 'ülker': 'ULKER', 'vesbe': 'VESBE', 'vestel': 'VESTL',
+    'yatas': 'YATAS', 'yunsa': 'YUNSA', 'zrgyo': 'ZRGYO', 'frodo': 'FRODO',
+    
+    # Alternatif yazımlar
+    'coca-cola': 'CCOLA', 'coca cola icecek': 'CCOLA', 'koç': 'KCHOL', 'koç grubu': 'KCHOL',
+    'turk hava yollari': 'THYAO', 'thy': 'THYAO', 'turk hava': 'THYAO',
+    'turk telekomünikasyon': 'TKFEN', 'turk telekom': 'TKFEN',
+    'toyota otosan': 'TOASO', 'toyota': 'TOASO',
+    'tüpras': 'TUPRS', 'tupras': 'TUPRS', 'türkiye petrol rafinerileri': 'TUPRS',
+    'garanti bankasi': 'GARAN', 'garanti': 'GARAN',
+    'is bankasi': 'ISCTR', 'isbank': 'ISCTR',
+    'yapi kredi bankasi': 'YKBNK', 'yapi kredi': 'YKBNK', 'yapikredi': 'YKBNK',
+    'vakifbank': 'VAKBN', 'vakif': 'VAKBN',
+    'sabanci': 'SAHOL', 'sabanci holding': 'SAHOL',
+    'arcelik': 'ARCLK', 'arcelik a.ş.': 'ARCLK',
+    'bim': 'BIMAS', 'bim birlesik magazalar': 'BIMAS',
+    'migros': 'MGROS', 'migros ticaret': 'MGROS',
+    'sasa': 'SASA', 'sasa polyurethan': 'SASA',
+    'turkcell': 'TCELL', 'turkcell iletisim': 'TCELL',
+    'sise cam': 'SISE', 'sise': 'SISE',
+    'eregli': 'EREGL', 'eregli demir': 'EREGL', 'eregli demir çelik': 'EREGL',
+    'petkim': 'PETKM', 'petkim petrokimya': 'PETKM',
+    'soda sanayi': 'SODA', 'soda': 'SODA',
+    'ülker': 'ULKER', 'ulker': 'ULKER',
+    'vestel': 'VESTL', 'vestel elektronik': 'VESTL',
+    'pegasus': 'PGSUS', 'pegasus havacilik': 'PGSUS',
+    'ford otosan': 'FROTO', 'ford': 'FROTO',
+    'akbank': 'AKBNK', 'akbank t.a.ş.': 'AKBNK',
+    'aselsan': 'ASELS', 'aselsan elektronik': 'ASELS',
+    'enka': 'ENKAI', 'enka insaat': 'ENKAI',
+    'ekonomi': 'EKGYO', 'ekonomi bankasi': 'EKGYO',
+    'hektas': 'HEKTS', 'hektas insaat': 'HEKTS',
+    'kardemir': 'KRDMD', 'kardemir demir celik': 'KRDMD',
+    'koza altin': 'KOZAA', 'koza': 'KOZAA',
+    'koza anadolu': 'KOZAL', 'koza anadolu metal': 'KOZAL'
+}
 
 load_dotenv("api.env")
 
@@ -67,55 +612,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# LLM Model - Ücretsiz yerel model
-llm_model = None
-llm_tokenizer = None
+# ENV değişkenlerini yükle
+load_dotenv("api.env")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-def initialize_llm():
-    """LLM modelini başlat"""
-    global llm_model, llm_tokenizer
-    try:
-        print("LLM modeli yükleniyor...")
-        # Küçük ve hızlı bir model kullan
-        model_name = "microsoft/DialoGPT-small"
-        llm_tokenizer = AutoTokenizer.from_pretrained(model_name)
-        llm_model = AutoModelForCausalLM.from_pretrained(model_name)
-        print("✅ LLM modeli başarıyla yüklendi!")
-        return True
-    except Exception as e:
-        print(f"❌ LLM modeli yüklenemedi: {e}")
-        return False
+def ask_groq(prompt: str) -> str:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {GROQ_API_KEY}"
+    }
+    payload = {
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "messages": [
+            {
+                "role": "system",
+                "content": "Sen profesyonel bir finans danışmanısın. Türkiye borsasındaki hisse senetleri hakkında doğru, daha özet ve yatırımcı dostu cevaplar ver."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    }
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code == 200:
+        return response.json()['choices'][0]['message']['content']
+    else:
+        return f"API Error: {response.status_code} - {response.text}"
 
-def ask_llm(question, max_length=100):
-    """LLM'e soru sor"""
-    global llm_model, llm_tokenizer
-    try:
-        if llm_model is None or llm_tokenizer is None:
-            return "LLM modeli henüz yüklenmedi."
-        
-        # Soruyu tokenize et
-        inputs = llm_tokenizer.encode(question, return_tensors="pt")
-        
-        # Yanıt üret
-        with torch.no_grad():
-            outputs = llm_model.generate(
-                inputs, 
-                max_length=max_length,
-                num_return_sequences=1,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=llm_tokenizer.eos_token_id
-            )
-        
-        # Yanıtı decode et
-        response = llm_tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return response
-    except Exception as e:
-        print(f"LLM hatası: {e}")
-        return "LLM yanıt veremedi."
-
-# LLM'i başlat
-initialize_llm()
+# LLM ile şirket ismini hisse koduna çeviren fonksiyon
+def get_stock_code_from_llm(company_name):
+    prompt = (
+        f"Kullanıcı '{company_name}' şirketinin Borsa İstanbul'daki hisse kodunu soruyor. "
+        "Sadece hisse kodunu, başka hiçbir şey yazmadan, büyük harflerle döndür."
+    )
+    code = ask_groq(prompt)
+    code = code.strip().upper()
+    if code in BIST_STOCKS:
+        return code
+    return None
 
 def get_finnhub_quote(symbol):
     """Gerçek zamanlı hisse verisi al - Finnhub, Alpha Vantage ve Yahoo Finance ile"""
@@ -400,12 +936,67 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
             print(f"Returning: {result}")
             return result
         
+        # Türk borsa haberleri sorusu
+        if any(word in question_lower for word in ['türk borsa haberleri', 'güncel haberler', 'borsa haberleri', 'turkish news', 'market news']):
+            print("Detected 'Turkish stock news' question")
+            try:
+                news_data = get_turkish_stock_news()
+                if news_data['success'] and news_data['news']:
+                    if language == 'tr':
+                        answer = f"📰 GÜNCEL TÜRK BORSA HABERLERİ ({news_data['total']} haber):\n\n"
+                    else:
+                        answer = f"📰 CURRENT TURKISH MARKET NEWS ({news_data['total']} articles):\n\n"
+                    
+                    for i, article in enumerate(news_data['news'][:5], 1):
+                        answer += f"{i}. {article.get('title', 'Başlık yok')}\n"
+                        answer += f"   📰 {article.get('source', 'Bilinmeyen')} | {article.get('published_at', 'Tarih bilgisi yok')[:10]}\n"
+                        if article.get('description'):
+                            answer += f"   📝 {article['description'][:100]}...\n"
+                        answer += "\n"
+                else:
+                    if language == 'tr':
+                        answer = "❌ Haber bulunamadı. Lütfen daha sonra tekrar deneyin."
+                    else:
+                        answer = "❌ No news found. Please try again later."
+                
+                return {"answer": answer, "chart": None}
+            except Exception as e:
+                print(f"Error getting Turkish news: {e}")
+                if language == 'tr':
+                    return {"answer": "❌ Haber alınırken bir hata oluştu.", "chart": None}
+                else:
+                    return {"answer": "❌ An error occurred while fetching news.", "chart": None}
+        
         # Hisse kodu var mı? (ör: CCOLA, BIMAS, THYAO)
         hisse = None
+        
+        # 1. Önce doğrudan hisse kodu ara
         for code in BIST_STOCKS:
             if code.lower() in question_lower:
                 hisse = code
                 break
+        
+        # 2. Eğer hisse kodu bulunamazsa, şirket ismi sözlüğünde ara
+        if not hisse:
+            # En uzun eşleşmeyi bul (daha spesifik eşleşme için)
+            best_match = None
+            best_match_length = 0
+            
+            for company_name, stock_code in COMPANY_TO_CODE.items():
+                if company_name in question_lower:
+                    if len(company_name) > best_match_length:
+                        best_match = stock_code
+                        best_match_length = len(company_name)
+            
+            if best_match:
+                hisse = best_match
+                print(f"Found best company match (length {best_match_length}) -> '{best_match}'")
+        
+        # 3. Eğer hala bulunamazsa, LLM ile bulmayı dene
+        if not hisse:
+            llm_code = get_stock_code_from_llm(question)
+            if llm_code:
+                hisse = llm_code
         
         # Forecasting sorusu mu? (ör: CCOLA tahmin, CCOLA forecast, CCOLA gelecek)
         if hisse and any(word in question_lower for word in ['tahmin', 'forecast', 'gelecek', 'future', 'prediction']):
@@ -492,7 +1083,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     return {"answer": f"❌ Could not create forecast for {hisse}.", "chart": None}
         
         # Grafik sorusu mu? (ör: CCOLA grafik, CCOLA chart)
-        if hisse and any(word in question_lower for word in ['grafik', 'chart', 'görsel']):
+        if hisse and any(word in question_lower for word in ['grafik','çiz','grafiği','çizdir','grafiğini','chart', 'görsel']):
             print(f"Getting chart for {hisse}")
             try:
                 # Zaman aralığını belirle
@@ -654,8 +1245,8 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                 llm_advice = ""
                 try:
                     llm_prompt = f"Ben {amount} TL ile yatırım yapmak istiyorum. Risk profili: {risk_profile}. Önerilen hisseler: {[rec[0] for rec in recommendations]}. Bu portföy hakkında kısa bir yorum yap."
-                    llm_advice = ask_llm(llm_prompt, max_length=150)
-                    if llm_advice and llm_advice != "LLM modeli henüz yüklenmedi." and llm_advice != "LLM yanıt veremedi.":
+                    llm_advice = ask_groq(llm_prompt)
+                    if llm_advice and not llm_advice.startswith("API Error"):
                         llm_advice = f"\n🤖 LLM Analizi: {llm_advice}"
                 except:
                     llm_advice = ""
@@ -735,27 +1326,206 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     answer = f"❌ Real-time data not found for {hisse}."
                 return {"answer": answer, "chart": None}
         
-        # Diğer sorular için yardım
-        if language == 'tr':
-            answer = "🤖 FINBOT Size Nasıl Yardımcı Olabilir?\n\n"
-            answer += "📈 Güncel fiyat: 'ARCLK güncel fiyat'\n"
-            answer += "📊 Grafik: 'ARCLK grafik' veya 'ARCLK 3 ay grafik'\n"
-            answer += "🔮 Tahmin: 'ARCLK tahmin' veya 'ARCLK forecast'\n"
-            answer += "💼 Yatırım tavsiyesi: '1000 TL ne alayım' veya 'portföy önerisi'\n"
-            answer += "📋 Hisse listesi: 'Hangi şirketler mevcut'\n\n"
-            answer += "💡 Grafik süreleri: 1 ay, 3 ay, 6 ay, 1 yıl\n"
-            answer += "💡 Tahmin yöntemleri: Prophet, ARIMA, LSTM\n"
-            answer += "💡 Risk profilleri: Düşük, Orta, Yüksek"
-        else:
-            answer = "🤖 How can FINBOT help you?\n\n"
-            answer += "📈 Current price: 'ARCLK current price'\n"
-            answer += "📊 Chart: 'ARCLK chart' or 'ARCLK 3 months chart'\n"
-            answer += "🔮 Forecast: 'ARCLK forecast' or 'ARCLK prediction'\n"
-            answer += "💼 Investment advice: 'What should I buy with 1000 TL' or 'portfolio recommendation'\n"
-            answer += "📋 Stock list: 'Which companies are available'\n\n"
-            answer += "💡 Chart periods: 1 month, 3 months, 6 months, 1 year\n"
-            answer += "💡 Forecast methods: Prophet, ARIMA, LSTM\n"
-            answer += "💡 Risk profiles: Low, Medium, High"
+        # Sosyal medya sentiment analizi sorusu mu? (ör: ASELS sosyal medya, ASELS haber analizi)
+        if hisse and any(word in question_lower for word in ['sosyal medya', 'haber', 'sentiment', 'analiz', 'hava', 'genel hava', 'medya', 'news', 'social media','medya analizi','haber analizi','haberler','sentiment analizi']):
+            print(f"Getting social media sentiment analysis for {hisse}")
+            try:
+                # Şirket adını bul
+                company_name = hisse
+                for name, code in COMPANY_TO_CODE.items():
+                    if code == hisse:
+                        company_name = name
+                        break
+                
+                # Sentiment analizi yap
+                sentiment_data = get_news_sentiment(company_name, hisse)
+                
+                if sentiment_data['error']:
+                    if language == 'tr':
+                        answer = f"❌ {hisse} için haber analizi yapılamadı: {sentiment_data['error']}"
+                    else:
+                        answer = f"❌ Could not analyze news for {hisse}: {sentiment_data['error']}"
+                    return {"answer": answer, "chart": None}
+                
+                # Trend analizi yap
+                trend_data = analyze_sentiment_trend(sentiment_data)
+                
+                # Sektör analizi yap
+                sector_data = analyze_sector_sentiment(sentiment_data, hisse)
+                
+                # Sentiment özeti oluştur
+                summary = get_sentiment_summary(sentiment_data, trend_data)
+                
+                # Sentiment skoruna göre emoji ve renk
+                sentiment_score = sentiment_data['sentiment_score']
+                if sentiment_score > 0.1:
+                    sentiment_emoji = "🟢"
+                    sentiment_color = "Olumlu"
+                elif sentiment_score < -0.1:
+                    sentiment_emoji = "🔴"
+                    sentiment_color = "Olumsuz"
+                else:
+                    sentiment_emoji = "🟡"
+                    sentiment_color = "Nötr"
+                
+                if language == 'tr':
+                    answer = f"📰 {hisse} SOSYAL MEDYA SENTIMENT ANALİZİ:\n\n"
+                    answer += f"{sentiment_emoji} Genel Hava: {sentiment_color}\n"
+                    answer += f"📊 Sentiment Skoru: {sentiment_score:.3f}\n"
+                    #answer += f"🎯 Güven Skoru: {sentiment_data['confidence']:.2f}\n"
+                    answer += f"📈 Toplam Haber: {sentiment_data['news_count']} adet\n"
+                    #answer += f"✅ Olumlu Haber: {sentiment_data['positive_news']} adet\n"
+                    #answer += f"❌ Olumsuz Haber: {sentiment_data['negative_news']} adet\n"
+                    answer += f"⚪ Nötr Haber: {sentiment_data['neutral_news']} adet\n\n"
+                    
+                    # Trend analizi
+                    trend_emoji = "📈" if trend_data['trend'] == 'Yükseliş' else "📉" if trend_data['trend'] == 'Düşüş' else "📊"
+                    answer += f"{trend_emoji} Trend Analizi: {trend_data['trend']}\n"
+                    #answer += f"📊 Trend Skoru: {trend_data['trend_score']:.3f}\n"
+                    answer += f"📝 Trend Açıklaması: {trend_data['trend_description']}\n\n"
+                    
+                    # Özet
+                    answer += f"💡 Analiz Özeti:\n{summary}\n\n"
+                    
+                    # Sektör analizi
+                    sector_emoji = "🏭" if sector_data['sector'] in ['Demir-Çelik', 'Kimya', 'Cam'] else \
+                                  "🏦" if sector_data['sector'] == 'Bankacılık' else \
+                                  "✈️" if sector_data['sector'] == 'Havacılık' else \
+                                  "📱" if sector_data['sector'] == 'Telekomünikasyon' else \
+                                  "⚡" if sector_data['sector'] == 'Enerji' else \
+                                  "🛡️" if sector_data['sector'] == 'Savunma' else \
+                                  "🏢" if sector_data['sector'] == 'Holding' else \
+                                  "🚗" if sector_data['sector'] == 'Otomotiv' else \
+                                  "🛒" if sector_data['sector'] == 'Perakende' else \
+                                  "🥤" if sector_data['sector'] == 'İçecek' else \
+                                  "🍽️" if sector_data['sector'] == 'Gıda' else "📊"
+                    
+                    answer += f"{sector_emoji} Sektör Analizi: {sector_data['sector']}\n"
+                    #answer += f"📊 Sektör Sentiment: {sector_data['sector_sentiment']:.3f}\n"
+                    #answer += f"🎯 Sektör Uygunluğu: {sector_data['sector_relevance']:.2f}\n"
+                    
+                    if sector_data['sector_keywords_found']:
+                        answer += f"🔑 Sektör Anahtar Kelimeleri: {', '.join(sector_data['sector_keywords_found'][:3])}\n"
+                    answer += "\n"
+                    
+
+                    
+                    # Anahtar kelimeler
+                    if sentiment_data['top_key_phrases']:
+                        answer += "🔑 Anahtar Kelimeler:\n"
+                        for phrase, count in sentiment_data['top_key_phrases']:
+                            answer += f"   • {phrase}: {count} kez\n"
+                        answer += "\n"
+                    
+                    if sentiment_data['recent_news']:
+                        answer += "📰 Son Haberler:\n"
+                        for i, news in enumerate(sentiment_data['recent_news'], 1):
+                            answer += f"   {i}. {news['title'][:60]}...\n"
+                            answer += f"      📰 {news['source']} | {news['published_at'][:10]}\n"
+                            if news.get('url'):
+                                answer += f"      🔗 Haber Linki: {news['url']}\n"
+                    
+                    answer += "\n💡 Bu analiz son 7 günün haberlerine dayanmaktadır."
+                else:
+                    answer = f"📰 {hisse} SOCIAL MEDIA SENTIMENT ANALYSIS:\n\n"
+                    answer += f"{sentiment_emoji} General Sentiment: {sentiment_color}\n"
+                    answer += f"📊 Sentiment Score: {sentiment_score:.3f}\n"
+                    answer += f"🎯 Confidence Score: {sentiment_data['confidence']:.2f}\n"
+                    answer += f"📈 Total News: {sentiment_data['news_count']} articles\n"
+                    #answer += f"✅ Positive News: {sentiment_data['positive_news']} articles\n"
+                    #answer += f"❌ Negative News: {sentiment_data['negative_news']} articles\n"
+                    answer += f"⚪ Neutral News: {sentiment_data['neutral_news']} articles\n\n"
+                    
+                    # Trend analysis
+                    trend_emoji = "📈" if trend_data['trend'] == 'Yükseliş' else "📉" if trend_data['trend'] == 'Düşüş' else "📊"
+                    answer += f"{trend_emoji} Trend Analysis: {trend_data['trend']}\n"
+                    #answer += f"📊 Trend Score: {trend_data['trend_score']:.3f}\n"
+                    answer += f"📝 Trend Description: {trend_data['trend_description']}\n\n"
+                    
+                    # Summary
+                    answer += f"💡 Analysis Summary:\n{summary}\n\n"
+                    
+                    # Sector analysis
+                    sector_emoji = "🏭" if sector_data['sector'] in ['Demir-Çelik', 'Kimya', 'Cam'] else \
+                                  "🏦" if sector_data['sector'] == 'Bankacılık' else \
+                                  "✈️" if sector_data['sector'] == 'Havacılık' else \
+                                  "📱" if sector_data['sector'] == 'Telekomünikasyon' else \
+                                  "⚡" if sector_data['sector'] == 'Enerji' else \
+                                  "🛡️" if sector_data['sector'] == 'Savunma' else \
+                                  "🏢" if sector_data['sector'] == 'Holding' else \
+                                  "🚗" if sector_data['sector'] == 'Otomotiv' else \
+                                  "🛒" if sector_data['sector'] == 'Perakende' else \
+                                  "🥤" if sector_data['sector'] == 'İçecek' else \
+                                  "🍽️" if sector_data['sector'] == 'Gıda' else "📊"
+                    
+                    answer += f"{sector_emoji} Sector Analysis: {sector_data['sector']}\n"
+                    #answer += f"📊 Sector Sentiment: {sector_data['sector_sentiment']:.3f}\n"
+                    #answer += f"🎯 Sector Relevance: {sector_data['sector_relevance']:.2f}\n"
+                    
+                    if sector_data['sector_keywords_found']:
+                        answer += f"🔑 Sector Keywords: {', '.join(sector_data['sector_keywords_found'][:3])}\n"
+                    answer += "\n"
+                    
+                    # Emotion analysis
+
+                    
+                    # Key phrases
+                    if sentiment_data['top_key_phrases']:
+                        answer += "🔑 Key Phrases:\n"
+                        for phrase, count in sentiment_data['top_key_phrases']:
+                            answer += f"   • {phrase}: {count} times\n"
+                        answer += "\n"
+                    
+                    if sentiment_data['recent_news']:
+                        answer += "📰 Recent News:\n"
+                        for i, news in enumerate(sentiment_data['recent_news'], 1):
+                            answer += f"   {i}. {news['title'][:60]}...\n"
+                            answer += f"      📰 {news['source']} | {news['published_at'][:10]}\n"
+                            if news.get('url'):
+                                answer += f"      🔗 Haber Linki: {news['url']}\n"
+                    
+                    answer += "\n💡 This analysis is based on news from the last 7 days."
+                
+                return {"answer": answer, "chart": None}
+            except Exception as e:
+                print(f"Error processing sentiment analysis: {e}")
+                if language == 'tr':
+                    return {"answer": f"❌ {hisse} için sentiment analizi yapılamadı.", "chart": None}
+                else:
+                    return {"answer": f"❌ Could not perform sentiment analysis for {hisse}.", "chart": None}
+        
+        # Eğer hiçbir anahtar kelimeye uymuyorsa, LLM'e sor
+        print("No specific command detected, using LLM for general questions")
+        try:
+            llm_response = ask_groq(question)
+            return {"answer": llm_response, "chart": None}
+        except Exception as e:
+            print(f"Error getting LLM response: {e}")
+            # LLM hatası durumunda yardım mesajı döndür
+            if language == 'tr':
+                answer = "🤖 FINBOT Size Nasıl Yardımcı Olabilir?\n\n"
+                answer += "📈 Güncel fiyat: 'ARCLK güncel fiyat'\n"
+                answer += "📊 Grafik: 'ARCLK grafik' veya 'ARCLK 3 ay grafik'\n"
+                answer += "🔮 Tahmin: 'ARCLK tahmin' veya 'ARCLK forecast'\n"
+                answer += "📰 Sentiment: 'ASELS medya analizi' veya 'ASELS haber analizi'\n"
+                answer += "💼 Yatırım tavsiyesi: '1000 TL ne alayım' veya 'portföy önerisi'\n"
+                answer += "📋 Hisse listesi: 'Hangi şirketler mevcut'\n\n"
+                answer += "💡 Grafik süreleri: 1 ay, 3 ay, 6 ay, 1 yıl\n"
+                answer += "💡 Tahmin yöntemleri: Prophet, ARIMA, LSTM\n"
+                answer += "💡 Risk profilleri: Düşük, Orta, Yüksek\n"
+                answer += "💡 Sentiment analizi: Son 7 günün haberleri"
+            else:
+                answer = "🤖 How can FINBOT help you?\n\n"
+                answer += "📈 Current price: 'ARCLK current price'\n"
+                answer += "📊 Chart: 'ARCLK chart' or 'ARCLK 3 months chart'\n"
+                answer += "🔮 Forecast: 'ARCLK forecast' or 'ARCLK prediction'\n"
+                answer += "📰 Sentiment: 'ASELS social media' or 'ASELS news analysis'\n"
+                answer += "💼 Investment advice: 'What should I buy with 1000 TL' or 'portfolio recommendation'\n"
+                answer += "📋 Stock list: 'Which companies are available'\n\n"
+                answer += "💡 Chart periods: 1 month, 3 months, 6 months, 1 year\n"
+                answer += "💡 Forecast methods: Prophet, ARIMA, LSTM\n"
+                answer += "💡 Risk profiles: Low, Medium, High\n"
+                answer += "💡 Sentiment analysis: News from last 7 days"
         
         return {"answer": answer, "chart": None}
         
@@ -769,6 +1539,185 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
 @app.get("/")
 def root():
     return {"message": "FINBOT backend is running with forecasting capabilities."}
+
+@app.get("/turkish-news")
+def get_turkish_news():
+    """Genel Türk borsa haberlerini al"""
+    try:
+        news_data = get_turkish_stock_news()
+        return news_data
+    except Exception as e:
+        return {"success": False, "error": str(e), "news": [], "total": 0}
+
+@app.get("/company-news/{stock_code}")
+def get_company_news(stock_code: str):
+    """Belirli bir şirket için Türkçe haberleri al"""
+    try:
+        # Şirket adını bul
+        company_name = stock_code
+        for name, code in COMPANY_TO_CODE.items():
+            if code == stock_code:
+                company_name = name
+                break
+        
+        news_data = get_turkish_stock_news_by_company(company_name, stock_code)
+        return news_data
+    except Exception as e:
+        return {"success": False, "error": str(e), "news": [], "total": 0}
+
+
+
+def analyze_sentiment_trend(sentiment_data: Dict) -> Dict:
+    """Sentiment trend analizi"""
+    if not sentiment_data['recent_news']:
+        return {'trend': 'Belirsiz', 'trend_score': 0.0, 'trend_description': 'Yeterli veri yok'}
+    
+    # Haberleri tarihe göre sırala
+    sorted_news = sorted(sentiment_data['recent_news'], 
+                        key=lambda x: x['published_at'], reverse=True)
+    
+    if len(sorted_news) < 2:
+        return {'trend': 'Belirsiz', 'trend_score': 0.0, 'trend_description': 'Yeterli veri yok'}
+    
+    # Son 3 haber ile önceki 3 haberin ortalamasını karşılaştır
+    recent_sentiments = [news['sentiment'] for news in sorted_news[:3]]
+    older_sentiments = [news['sentiment'] for news in sorted_news[3:6]] if len(sorted_news) >= 6 else []
+    
+    recent_avg = sum(recent_sentiments) / len(recent_sentiments)
+    older_avg = sum(older_sentiments) / len(older_sentiments) if older_sentiments else recent_avg
+    
+    trend_score = recent_avg - older_avg
+    
+    if trend_score > 0.1:
+        trend = 'Yükseliş'
+        trend_description = 'Sentiment pozitif yönde gelişiyor'
+    elif trend_score < -0.1:
+        trend = 'Düşüş'
+        trend_description = 'Sentiment negatif yönde gelişiyor'
+    else:
+        trend = 'Stabil'
+        trend_description = 'Sentiment stabil seyrediyor'
+    
+    return {
+        'trend': trend,
+        'trend_score': trend_score,
+        'trend_description': trend_description,
+        'recent_avg': recent_avg,
+        'older_avg': older_avg
+    }
+
+def get_sentiment_summary(sentiment_data: Dict, trend_data: Dict) -> str:
+    """Sentiment özeti oluştur"""
+    summary = ""
+    
+    # Genel durum
+    if sentiment_data['sentiment_score'] > 0.2:
+        summary += "📈 Genel olarak çok olumlu bir hava var. "
+    elif sentiment_data['sentiment_score'] > 0.05:
+        summary += "📊 Genel olarak olumlu bir hava var. "
+    elif sentiment_data['sentiment_score'] < -0.2:
+        summary += "📉 Genel olarak çok olumsuz bir hava var. "
+    elif sentiment_data['sentiment_score'] < -0.05:
+        summary += "📊 Genel olarak olumsuz bir hava var. "
+    else:
+        summary += "📊 Genel olarak nötr bir hava var. "
+    
+    # Trend
+    if trend_data['trend'] == 'Yükseliş':
+        summary += "Trend pozitif yönde gelişiyor. "
+    elif trend_data['trend'] == 'Düşüş':
+        summary += "Trend negatif yönde gelişiyor. "
+    else:
+        summary += "Trend stabil seyrediyor. "
+    
+    # Güven
+    if sentiment_data['confidence'] > 0.7:
+        summary += "Analiz sonuçları yüksek güvenilirlikte. "
+    elif sentiment_data['confidence'] > 0.4:
+        summary += "Analiz sonuçları orta güvenilirlikte. "
+    else:
+        summary += "Analiz sonuçları düşük güvenilirlikte. "
+    
+    # Ana duygular
+    if sentiment_data['top_emotions']:
+        top_emotion = sentiment_data['top_emotions'][0]
+        summary += f"En yaygın duygu: {top_emotion[0]} ({top_emotion[1]} kez). "
+    
+    return summary
+
+# Sektör tanımları
+SECTOR_DEFINITIONS = {
+    'AKBNK': 'Bankacılık', 'GARAN': 'Bankacılık', 'ISCTR': 'Bankacılık', 'YKBNK': 'Bankacılık', 'VAKBN': 'Bankacılık',
+    'THYAO': 'Havacılık', 'PGSUS': 'Havacılık',
+    'TCELL': 'Telekomünikasyon',
+    'TUPRS': 'Enerji', 'ENJSA': 'Enerji', 'ENKAI': 'Enerji',
+    'ASELS': 'Savunma', 'ASELSAN': 'Savunma',
+    'EREGL': 'Demir-Çelik', 'KRDMD': 'Demir-Çelik',
+    'KCHOL': 'Holding', 'SAHOL': 'Holding',
+    'FROTO': 'Otomotiv', 'TOASO': 'Otomotiv',
+    'BIMAS': 'Perakende', 'MGROS': 'Perakende',
+    'SASA': 'Kimya', 'SISE': 'Cam',
+    'CCOLA': 'İçecek',
+    'SOKM': 'Gıda', 'ULKER': 'Gıda'
+}
+
+# Sektör bazlı anahtar kelimeler
+SECTOR_KEYWORDS = {
+    'Bankacılık': ['kredi', 'mevduat', 'faiz', 'banka', 'finans', 'kredi kartı', 'mortgage', 'leasing'],
+    'Havacılık': ['uçuş', 'uçak', 'havayolu', 'terminal', 'bagaj', 'bilet', 'rota', 'pilot'],
+    'Telekomünikasyon': ['mobil', 'internet', '5g', 'telefon', 'operatör', 'tarife', 'veri', 'şebeke'],
+    'Enerji': ['petrol', 'rafineri', 'elektrik', 'doğalgaz', 'enerji', 'yakıt', 'boru hattı'],
+    'Savunma': ['savunma', 'silah', 'radar', 'elektronik', 'askeri', 'teknoloji', 'proje'],
+    'Demir-Çelik': ['çelik', 'demir', 'metal', 'üretim', 'fabrika', 'hammadde', 'hurda'],
+    'Holding': ['holding', 'şirket', 'yatırım', 'portföy', 'diversifikasyon', 'strateji'],
+    'Otomotiv': ['araç', 'otomobil', 'fabrika', 'üretim', 'satış', 'model', 'motor'],
+    'Perakende': ['market', 'mağaza', 'satış', 'ürün', 'fiyat', 'kampanya', 'müşteri'],
+    'Kimya': ['kimya', 'polietilen', 'plastik', 'petrokimya', 'hammadde', 'üretim'],
+    'Cam': ['cam', 'şişe', 'ambalaj', 'üretim', 'geri dönüşüm'],
+    'İçecek': ['içecek', 'meşrubat', 'şişe', 'kutu', 'üretim', 'dağıtım']
+}
+
+def get_company_sector(stock_code: str) -> str:
+    """Şirketin sektörünü döndür"""
+    return SECTOR_DEFINITIONS.get(stock_code, 'Genel')
+
+def analyze_sector_sentiment(sentiment_data: Dict, stock_code: str) -> Dict:
+    """Sektör bazlı sentiment analizi"""
+    sector = get_company_sector(stock_code)
+    sector_keywords = SECTOR_KEYWORDS.get(sector, [])
+    
+    if not sentiment_data['recent_news']:
+        return {
+            'sector': sector,
+            'sector_sentiment': 0.0,
+            'sector_keywords_found': [],
+            'sector_relevance': 0.0
+        }
+    
+    sector_sentiments = []
+    sector_keywords_found = []
+    total_relevance = 0.0
+    
+    for news in sentiment_data['recent_news']:
+        title = news.get('title', '')
+        content = title.lower()
+        
+        # Sektör anahtar kelimelerini ara
+        found_keywords = [keyword for keyword in sector_keywords if keyword.lower() in content]
+        if found_keywords:
+            sector_keywords_found.extend(found_keywords)
+            sector_sentiments.append(news['sentiment'])
+            total_relevance += 1
+    
+    sector_sentiment = sum(sector_sentiments) / len(sector_sentiments) if sector_sentiments else 0.0
+    sector_relevance = total_relevance / len(sentiment_data['recent_news']) if sentiment_data['recent_news'] else 0.0
+    
+    return {
+        'sector': sector,
+        'sector_sentiment': sector_sentiment,
+        'sector_keywords_found': list(set(sector_keywords_found)),
+        'sector_relevance': sector_relevance
+    }
 
 if __name__ == "__main__":
     import uvicorn

@@ -917,10 +917,10 @@ def get_available_stocks(language="tr"):
     """Mevcut hisseler listesini döndür"""
     if language == "tr":
         stocks_list = "\n".join([f"• {stock}" for stock in BIST_STOCKS])
-        return f"📋 MEVCUT HİSSELER (Finnhub API ile gerçek zamanlı veri):\n\n{stocks_list}\n\n💡 Örnek kullanım:\n• 'CCOLA güncel fiyat'\n• 'THYAO grafik'\n• 'GARAN haber'"
+        return f"📋 MEVCUT HİSSELER ( gerçek zamanlı veri):\n\n{stocks_list}\n\n💡 Örnek kullanım:\n• 'CCOLA güncel fiyat'\n• 'THYAO grafik'\n• 'GARAN haber'"
     else:
         stocks_list = "\n".join([f"• {stock}" for stock in BIST_STOCKS])
-        return f"📋 AVAILABLE STOCKS (Real-time data via Finnhub API):\n\n{stocks_list}\n\n💡 Example usage:\n• 'CCOLA current price'\n• 'THYAO chart'\n• 'GARAN news'"
+        return f"📋 AVAILABLE STOCKS (Real-time data):\n\n{stocks_list}\n\n💡 Example usage:\n• 'CCOLA current price'\n• 'THYAO chart'\n• 'GARAN news'"
 
 @app.post("/ask")
 async def ask_question(question: str = Form(...), language: str = Form("tr")):
@@ -1247,7 +1247,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     llm_prompt = f"Ben {amount} TL ile yatırım yapmak istiyorum. Risk profili: {risk_profile}. Önerilen hisseler: {[rec[0] for rec in recommendations]}. Bu portföy hakkında kısa bir yorum yap."
                     llm_advice = ask_groq(llm_prompt)
                     if llm_advice and not llm_advice.startswith("API Error"):
-                        llm_advice = f"\n🤖 LLM Analizi: {llm_advice}"
+                        llm_advice = f"\n🤖 Analiz: {llm_advice}"
                 except:
                     llm_advice = ""
                 
@@ -1264,7 +1264,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     
                     answer += f"\n💰 Toplam Yatırım: {amount:,} TL{llm_advice}\n"
                     answer += "⚠️ Bu tavsiyeler sadece referans amaçlıdır!\n"
-                    answer += "🕐 Borsa saati: 10:00-18:00"
+                    #answer += "🕐 Borsa saati: 10:00-18:00"
                 else:
                     answer = f"💼 INVESTMENT ADVICE FOR {amount:,} TL:\n\n"
                     answer += f"📊 Risk Profile: {risk_profile.upper()}\n\n"
@@ -1425,7 +1425,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                             if news.get('url'):
                                 answer += f"      🔗 Haber Linki: {news['url']}\n"
                     
-                    answer += "\n💡 Bu analiz son 7 günün haberlerine dayanmaktadır."
+                    answer += "\n💡 Bu analiz son haberlere dayanmaktadır."
                 else:
                     answer = f"📰 {hisse} SOCIAL MEDIA SENTIMENT ANALYSIS:\n\n"
                     answer += f"{sentiment_emoji} General Sentiment: {sentiment_color}\n"
@@ -1484,7 +1484,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                             if news.get('url'):
                                 answer += f"      🔗 Haber Linki: {news['url']}\n"
                     
-                    answer += "\n💡 This analysis is based on news from the last 7 days."
+                    answer += "\n💡 This analysis is based on news from the last days."
                 
                 return {"answer": answer, "chart": None}
             except Exception as e:
@@ -1513,7 +1513,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                 answer += "💡 Grafik süreleri: 1 ay, 3 ay, 6 ay, 1 yıl\n"
                 answer += "💡 Tahmin yöntemleri: Prophet, ARIMA, LSTM\n"
                 answer += "💡 Risk profilleri: Düşük, Orta, Yüksek\n"
-                answer += "💡 Sentiment analizi: Son 7 günün haberleri"
+                answer += "💡 Sentiment analizi: Son haberler"
             else:
                 answer = "🤖 How can FINBOT help you?\n\n"
                 answer += "📈 Current price: 'ARCLK current price'\n"
@@ -1525,7 +1525,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                 answer += "💡 Chart periods: 1 month, 3 months, 6 months, 1 year\n"
                 answer += "💡 Forecast methods: Prophet, ARIMA, LSTM\n"
                 answer += "💡 Risk profiles: Low, Medium, High\n"
-                answer += "💡 Sentiment analysis: News from last 7 days"
+                answer += "💡 Sentiment analysis: News from last days"
         
         return {"answer": answer, "chart": None}
         

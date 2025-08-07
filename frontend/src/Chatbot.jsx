@@ -55,7 +55,7 @@ const Chatbot = () => {
 💡 Grafik süreleri: 1 ay, 3 ay, 6 ay, 1 yıl
 💡 Tahmin yöntemleri: Prophet, ARIMA, LSTM
 💡 Risk profilleri: Düşük, Orta, Yüksek
-📰 Sentiment analizi: Son 7 günün haberleri` }
+📰 Sentiment analizi: Son haberler` }
   ]);
   const [loading, setLoading] = useState(false);
   const [language, setLanguage] = useState('tr');
@@ -255,7 +255,7 @@ const styles = {
     overflow: 'hidden',
   },
   header: {
-    background: '#1976d2',
+    background: '#d32f2f', // kırmızı
     color: '#fff',
     padding: '16px',
     fontSize: 22,
@@ -289,7 +289,7 @@ const styles = {
   },
   userMessage: {
     alignSelf: 'flex-end',
-    background: '#1976d2',
+    background: '#d32f2f', // kırmızı
     color: '#fff',
     padding: '8px 14px',
     borderRadius: '16px 16px 0 16px',
@@ -299,7 +299,7 @@ const styles = {
   },
   botMessage: {
     alignSelf: 'flex-start',
-    background: '#e3eafc',
+    background: '#f0e0e4ff',
     color: '#222',
     padding: '8px 14px',
     borderRadius: '16px 16px 16px 0',
@@ -336,7 +336,7 @@ const styles = {
     padding: '0 18px',
     borderRadius: 8,
     border: 'none',
-    background: '#1976d2',
+    background: '#d32f2f',
     color: '#fff',
     fontWeight: 600,
     fontSize: 15,

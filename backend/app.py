@@ -180,11 +180,11 @@ def get_news_sentiment(company_name: str, stock_code: str) -> Dict:
             elif stock_code == 'GARAN':
                 search_terms.extend(['Garanti', 'garanti', 'GARANTI', 'Türkiye bankacılık', 'banka', 'finans'])
             elif stock_code == 'ISCTR':
-                search_terms.extend(['İş Bankası', 'İşbank', 'isbank', 'ISBANK', 'Türkiye bankacılık', 'banka', 'finans'])
+                search_terms.extend(['İş Bankası','iş bankası' 'İşbank', 'isbank', 'ISBANK', 'Türkiye bankacılık', 'banka', 'finans'])
             elif stock_code == 'YKBNK':
                 search_terms.extend(['Yapı Kredi', 'Yapıkredi', 'yapikredi', 'YAPIKREDI', 'Türkiye bankacılık', 'banka', 'finans'])
             elif stock_code == 'VAKBN':
-                search_terms.extend(['Vakıfbank', 'vakifbank', 'VAKIFBANK', 'Türkiye bankacılık', 'banka', 'finans'])
+                search_terms.extend(['Vakıfbank','vakıfbank' 'vakifbank', 'VAKIFBANK', 'Türkiye bankacılık', 'banka', 'finans'])
             elif stock_code == 'THYAO':
                 search_terms.extend(['Türk Hava Yolları', 'THY', 'thy', 'havacılık', 'uçak', 'havayolu'])
             elif stock_code == 'TCELL':
@@ -926,7 +926,15 @@ def get_available_stocks(language="tr"):
 async def ask_question(question: str = Form(...), language: str = Form("tr")):
     print(f"Received request - question: '{question}', language: '{language}'")
     try:
-        question_lower = question.lower()
+        import unicodedata
+        def normalize_text(text):
+            # Lowercase and remove accents for robust matching
+            text = text.lower()
+            text = unicodedata.normalize('NFD', text)
+            text = ''.join([c for c in text if unicodedata.category(c) != 'Mn'])
+            return text
+
+        question_lower = normalize_text(question)
         print(f"Processing question: '{question_lower}'")
         
         # "Hangi şirketler mevcut" sorusu
@@ -967,36 +975,24 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                 else:
                     return {"answer": "❌ An error occurred while fetching news.", "chart": None}
         
-        # Hisse kodu var mı? (ör: CCOLA, BIMAS, THYAO)
-        hisse = None
-        
-        # 1. Önce doğrudan hisse kodu ara
+        # Hisse kodu veya kodları var mı? (ör: CCOLA, BIMAS, THYAO veya karşılaştırma)
+        hisse_list = []
+        # 1. Doğrudan hisse kodlarını ara (birden fazla olabilir)
         for code in BIST_STOCKS:
             if code.lower() in question_lower:
-                hisse = code
-                break
-        
-        # 2. Eğer hisse kodu bulunamazsa, şirket ismi sözlüğünde ara
-        if not hisse:
-            # En uzun eşleşmeyi bul (daha spesifik eşleşme için)
-            best_match = None
-            best_match_length = 0
-            
-            for company_name, stock_code in COMPANY_TO_CODE.items():
-                if company_name in question_lower:
-                    if len(company_name) > best_match_length:
-                        best_match = stock_code
-                        best_match_length = len(company_name)
-            
-            if best_match:
-                hisse = best_match
-                print(f"Found best company match (length {best_match_length}) -> '{best_match}'")
-        
-        # 3. Eğer hala bulunamazsa, LLM ile bulmayı dene
-        if not hisse:
+                hisse_list.append(code)
+        # 2. Şirket ismi sözlüğünde ara (birden fazla olabilir)
+        for company_name, stock_code in COMPANY_TO_CODE.items():
+            if company_name in question_lower and stock_code not in hisse_list:
+                hisse_list.append(stock_code)
+        # 3. LLM ile bulmayı dene (tekli fallback)
+        if not hisse_list:
             llm_code = get_stock_code_from_llm(question)
             if llm_code:
-                hisse = llm_code
+                hisse_list.append(llm_code)
+        # Sadece ilk iki hisseyi al (karşılaştırma için)
+        hisse_list = hisse_list[:2]
+        hisse = hisse_list[0] if hisse_list else None
         
         # Forecasting sorusu mu? (ör: CCOLA tahmin, CCOLA forecast, CCOLA gelecek)
         if hisse and any(word in question_lower for word in ['tahmin', 'forecast', 'gelecek', 'future', 'prediction']):
@@ -1082,11 +1078,17 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                 else:
                     return {"answer": f"❌ Could not create forecast for {hisse}.", "chart": None}
         
-        # Grafik sorusu mu? (ör: CCOLA grafik, CCOLA chart)
-        if hisse and any(word in question_lower for word in ['grafik','çiz','grafiği','çizdir','grafiğini','chart', 'görsel']):
-            print(f"Getting chart for {hisse}")
+        # Grafik veya karşılaştırma sorusu mu? (ör: CCOLA grafik, CCOLA vs BIMAS grafik, CCOLA ile BIMAS karşılaştır)
+        chart_keywords = [
+            'grafik','çiz','grafiği','çizdir','grafiğini','chart', 'görsel',
+            'karşılaştır', 'karşılaştırma', 'vs', 'ile'
+        ]
+        # Ayrıca büyük harfli ve normalize edilmiş varyantları da ekle
+        chart_keywords += [k.upper() for k in chart_keywords]
+        chart_keywords = list(set([normalize_text(k) for k in chart_keywords]))
+        if hisse_list and any(word in question_lower for word in chart_keywords):
+            print(f"Getting chart for {hisse_list}")
             try:
-                # Zaman aralığını belirle
                 days = 30  # Varsayılan
                 if '1 ay' in question_lower or '1ay' in question_lower:
                     days = 30
@@ -1096,80 +1098,113 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     days = 180
                 elif '1 yıl' in question_lower or '1yıl' in question_lower or '1 yil' in question_lower:
                     days = 365
-                
-                # Yahoo Finance'den grafik verisi al
-                chart_data = get_yfinance_chart(hisse, days=days)
-                if chart_data and chart_data.get('s') == 'ok':
-                    dates = [datetime.fromtimestamp(ts) for ts in chart_data['t']]
-                    prices = chart_data['c']
-                    
-                    # Grafik çiz
-                    plt.figure(figsize=(12, 6))
-                    plt.plot(dates, prices, linewidth=2, color='blue', label='Fiyat')
-                    
-                    plt.title(f"{hisse} Son {days} Günlük Fiyat Grafiği", 
-                             fontsize=14, fontweight='bold')
+
+                plt.figure(figsize=(12, 6))
+                chart_found = False
+                chart_labels = []
+                for idx, hisse_kodu in enumerate(hisse_list):
+                    chart_data = get_yfinance_chart(hisse_kodu, days=days)
+                    if chart_data and chart_data.get('s') == 'ok':
+                        dates = [datetime.fromtimestamp(ts) for ts in chart_data['t']]
+                        prices = chart_data['c']
+                        color = ['blue', 'red', 'green', 'orange', 'purple'][idx % 5]
+                        plt.plot(dates, prices, linewidth=2, color=color, label=hisse_kodu)
+                        chart_found = True
+                        chart_labels.append(hisse_kodu)
+                if chart_found:
+                    plt.title(f"{' vs '.join(chart_labels)} Son {days} Günlük Fiyat Karşılaştırması", fontsize=14, fontweight='bold')
                     plt.xlabel('Tarih', fontsize=12)
                     plt.ylabel('Fiyat (TL)', fontsize=12)
                     plt.grid(True, alpha=0.3)
                     plt.legend()
                     plt.xticks(rotation=45)
                     plt.tight_layout()
-                    
                     buf = io.BytesIO()
                     plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
                     plt.close()
                     buf.seek(0)
                     chart_b64 = base64.b64encode(buf.read()).decode('utf-8')
-                    
-                    # Son 5 fiyat değeri
-                    last_5_prices = prices[-5:]
-                    last_5_dates = [d.strftime('%d.%m') for d in dates[-5:]]
-                    
+                    # Kullanıcıya örnek mesajlar ekle
+                    example_hisse = chart_labels[0] if chart_labels else "hisse"
                     if language == 'tr':
-                        answer = f"📊 {hisse} SON {days} GÜNLÜK FİYAT GRAFİĞİ:\n\n"
-                        answer += "💰 Son 5 gün fiyatı:\n"
-                        for i, (date, price) in enumerate(zip(last_5_dates, last_5_prices), 1):
-                            answer += f"   {date}: {price:.2f} TL\n"
-                        answer += f"\n📈 Grafik: Son {days} günlük fiyat hareketi"
+                        answer = f"📊 {' ve '.join(chart_labels)} SON {days} GÜNLÜK FİYAT KARŞILAŞTIRMASI:\n\n"
+                        answer += f"Bu grafikte {', '.join(chart_labels)} hisselerinin fiyat hareketleri karşılaştırılmıştır.\n\n"
+                        answer += f"💡 Farklı dönemler için örnekler:\n"
+                        answer += f"• {example_hisse} ile 1 aylık grafik\n"
+                        answer += f"• {example_hisse} ile 3 aylık grafik\n"
+                        answer += f"• {example_hisse} ile 6 aylık grafik\n"
+                        answer += f"• {example_hisse} ile 1 yıllık grafik\n"
+                        answer += f"\nBaşka bir hisse ile karşılaştırmak için: {example_hisse} ve BIMAS grafik\n"
                     else:
-                        answer = f"📊 {hisse} LAST {days} DAYS PRICE CHART:\n\n"
-                        answer += "💰 Last 5 days price:\n"
-                        for i, (date, price) in enumerate(zip(last_5_dates, last_5_prices), 1):
-                            answer += f"   {date}: {price:.2f} TL\n"
-                        answer += f"\n📈 Chart: Last {days} days price movement"
-                    
+                        answer = f"📊 {' and '.join(chart_labels)} LAST {days} DAYS PRICE COMPARISON:\n\n"
+                        answer += f"This chart compares the price movements of {', '.join(chart_labels)} stocks.\n\n"
+                        answer += f"💡 For different periods, try:\n"
+                        answer += f"• {example_hisse} 1 month chart\n"
+                        answer += f"• {example_hisse} 3 months chart\n"
+                        answer += f"• {example_hisse} 6 months chart\n"
+                        answer += f"• {example_hisse} 1 year chart\n"
+                        answer += f"\nTo compare with another stock: {example_hisse} and BIMAS chart\n"
                     return {"answer": answer, "chart": chart_b64}
                 else:
                     if language == 'tr':
-                        answer = f"❌ {hisse} için grafik verisi bulunamadı."
+                        answer = f"❌ Grafik verisi bulunamadı."
                     else:
-                        answer = f"❌ Chart data not found for {hisse}."
+                        answer = f"❌ Chart data not found."
                     return {"answer": answer, "chart": None}
             except Exception as e:
                 print(f"Error processing chart request: {e}")
                 if language == 'tr':
-                    return {"answer": f"❌ {hisse} için grafik oluşturulamadı.", "chart": None}
+                    return {"answer": f"❌ Grafik oluşturulamadı.", "chart": None}
                 else:
-                    return {"answer": f"❌ Could not create chart for {hisse}.", "chart": None}
+                    return {"answer": f"❌ Could not create chart.", "chart": None}
         
         # Yatırım tavsiyesi sorusu mu? (ör: 1000 TL ne alayım, portföy önerisi)
-        if any(word in question_lower for word in ['tavsiye', 'öneri', 'ne alayım', 'portföy', 'yatırım', 'advice', 'recommendation', 'portfolio']):
+        # Genişletilmiş anahtar kelime listesi, büyük harfli ve normalleştirilmiş varyantlar dahil
+        portfolio_keywords = [
+            'tavsiye', 'öneri', 'ne alayım', 'hangi hisseleri', 'portföy', 'yatırım',
+            'advice', 'recommendation', 'portfolio',
+            'ne alabilirim', 'ne alinir', 'ne alinabilir', 'hangi hisseleri alabilirim',
+            'tl var ne alayim', 'tl var ne alabilirim', 'tl var hangi hisseleri alabilirim',
+            'tl var hangi hisseleri alinir', 'tl var hangi hisseleri alinabilir',
+            'tl var portföy', 'tl var portfoy', 'tl var portföy önerisi', 'tl var portfoy onerisi',
+            'tl var', 'ne yapayim', 'hangi hisseler', 'hangi hisse', 'hangi hisseyi',
+        ]
+        # Ayrıca, anahtar kelimelerin büyük harfli varyantlarını da ekle
+        portfolio_keywords += [k.upper() for k in portfolio_keywords]
+        # Normalize edilmiş anahtar kelimelerle karşılaştır
+        portfolio_keywords = list(set([normalize_text(k) for k in portfolio_keywords]))
+        if any(word in question_lower for word in portfolio_keywords):
             print("Getting investment advice")
             try:
-                # Miktar belirleme (regex ile)
+                # Miktar belirleme (gelişmiş regex ve Türkçe/İngilizce yazımlar)
                 amount = 1000  # Varsayılan
-                match = re.search(r'(\d{3,6})\s*tl', question_lower)
+                # 1. Noktalı, virgüllü, boşluklu rakamlar: 1.000, 1,000, 1000, 10 000, 5 000
+                match = re.search(r'(\d{1,3}(?:[.,\s]\d{3})+|\d{3,6})\s*tl', question_lower)
                 if match:
-                    amount = int(match.group(1))
+                    raw = match.group(1)
+                    raw = raw.replace('.', '').replace(',', '').replace(' ', '')
+                    amount = int(raw)
                 else:
-                    # 'bin', '5bin', '10bin' gibi ifadeleri de yakala
-                    if '10bin' in question_lower or '10 bin' in question_lower:
-                        amount = 10000
-                    elif '5bin' in question_lower or '5 bin' in question_lower:
-                        amount = 5000
-                    elif 'bin' in question_lower:
-                        amount = 1000
+                    # 2. 'bin', 'milyon' gibi Türkçe ifadeler
+                    bin_match = re.search(r'(\d*)\s*bin\s*tl', question_lower)
+                    if bin_match:
+                        num = bin_match.group(1)
+                        if num.strip() == '' or num.strip() == '1':
+                            amount = 1000
+                        else:
+                            amount = int(num) * 1000
+                    else:
+                        # Sadece 'bin tl' geçiyorsa
+                        if re.search(r'\bbin\s*tl\b', question_lower):
+                            amount = 1000
+                        # 'milyon' desteği (isteğe bağlı)
+                        milyon_match = re.search(r'(\d*)\s*milyon\s*tl', question_lower)
+                        if milyon_match:
+                            num = milyon_match.group(1)
+                            if num.strip() == '' or num.strip() == '1':
+                                amount = 1_000_000
+                            else:
+                                amount = int(num) * 1_000_000
                 
                 # Risk profili belirleme
                 risk_profile = 'orta'  # Varsayılan
@@ -1221,20 +1256,32 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                         # Tüm sektörler kullanıldıysa tekrar kullan
                         available_sectors = sectors
                         used_sectors.clear()
-                    
+
                     # Rastgele sektör seç
                     sector = random.choice(available_sectors)
                     used_sectors.add(sectors.index(sector))
-                    
-                    # O sektörden rastgele hisse seç
-                    stock = random.choice(sector)
-                    
+
+                    # O sektörden daha önce seçilmemiş hisse seç
+                    already_selected = set([rec[0] for rec in recommendations])
+                    available_stocks = [s for s in sector if s[0] not in already_selected]
+                    if not available_stocks:
+                        # Eğer o sektördeki tüm hisseler seçildiyse, sektördeki tüm hisselerden seç (tekrar olmaması için diğer sektörlere geçilecek)
+                        available_stocks = [s for s in sector if s[0] not in already_selected]
+                    if not available_stocks:
+                        # Hala yoksa, tüm sektörlerdeki hisselerden seç (son çare, ama tekrar olmaması için)
+                        all_stocks = [s for sec in sectors for s in sec if s[0] not in already_selected]
+                        if not all_stocks:
+                            break  # Tüm hisseler seçildi, çık
+                        stock = random.choice(all_stocks)
+                    else:
+                        stock = random.choice(available_stocks)
+
                     # Ağırlık hesapla
                     if i < len(sector_weights):
                         weight = sector_weights[i]
                     else:
                         weight = 1.0 / portfolio_size
-                    
+
                     recommendations.append((stock[0], stock[1], weight))
                 
                 # Ağırlıkları normalize et
@@ -1243,8 +1290,15 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                 
                 # LLM ile kişiselleştirilmiş tavsiye al
                 llm_advice = ""
+                # LLM analizini, portföyde gerçekten önerilen hisselerle yap
                 try:
-                    llm_prompt = f"Ben {amount} TL ile yatırım yapmak istiyorum. Risk profili: {risk_profile}. Önerilen hisseler: {[rec[0] for rec in recommendations]}. Bu portföy hakkında kısa bir yorum yap."
+                    # final_portfolio henüz oluşmadıysa recommendations ile devam et, ama mümkünse final_portfolio'yu kullan
+                    temp_portfolio_syms = None
+                    if 'final_portfolio' in locals() and final_portfolio:
+                        temp_portfolio_syms = [rec[0] for rec in final_portfolio]
+                    else:
+                        temp_portfolio_syms = [rec[0] for rec in recommendations]
+                    llm_prompt = f"Ben {amount} TL ile yatırım yapmak istiyorum. Risk profili: {risk_profile}. Önerilen hisseler: {temp_portfolio_syms}. Bu portföy hakkında kısa bir yorum yap."
                     llm_advice = ask_groq(llm_prompt)
                     if llm_advice and not llm_advice.startswith("API Error"):
                         llm_advice = f"\n🤖 Analiz: {llm_advice}"
@@ -1252,33 +1306,147 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     llm_advice = ""
                 
                 # Önerileri formatla
+                # Daha mantıklı ve dengeli dağılım algoritması (uygun hisse yoksa yerine başka hisse öner)
+                price_cache = {}
+                for symbol, name, ratio in recommendations:
+                    yf_data = get_yfinance_quote(symbol)
+                    if yf_data and yf_data.get('c', 0) > 0:
+                        price_cache[symbol] = yf_data['c']
+                    else:
+                        price_cache[symbol] = 100  # fallback if price not found
+
+                portfolio_size = len(recommendations)
+                if portfolio_size == 0:
+                    if language == 'tr':
+                        return {"answer": "❗ Portföy oluşturulamadı.", "chart": None}
+                    else:
+                        return {"answer": "❗ Portfolio could not be created.", "chart": None}
+
+                per_stock = amount // portfolio_size
+                kalan = amount - (per_stock * portfolio_size)
+                # Hisseleri fiyatına göre sırala (en ucuzdan pahalıya)
+                sorted_recs = sorted(recommendations, key=lambda x: price_cache.get(x[0], 100))
+                all_candidates = sorted(set([(s, n, price_cache[s]) for s, n, _ in recommendations]), key=lambda x: x[2])
+                final_portfolio = []
+                used_symbols = set()
+                kalan_tutar = kalan
+                for idx, (symbol, name, _) in enumerate(sorted_recs):
+                    price = price_cache.get(symbol, 100)
+                    invest = per_stock + (1 if idx < kalan_tutar else 0)
+                    shares = int(invest // price)
+                    used = shares * price
+                    if shares < 1:
+                        found = False
+                        # Önce all_candidates listesinden dene
+                        for cand_symbol, cand_name, cand_price in all_candidates:
+                            if cand_symbol not in used_symbols and cand_price <= invest:
+                                cand_shares = int(invest // cand_price)
+                                cand_used = cand_shares * cand_price
+                                if cand_shares > 0:
+                                    final_portfolio.append((cand_symbol, cand_name, cand_used, cand_shares, cand_price, invest))
+                                    used_symbols.add(cand_symbol)
+                                    found = True
+                                    break
+                        # Eğer hala bulunamazsa, BIST_STOCKS listesinden dene
+                        if not found:
+                            for alt_symbol in BIST_STOCKS:
+                                if alt_symbol not in used_symbols:
+                                    # Fiyatı çek
+                                    alt_price = price_cache.get(alt_symbol)
+                                    if alt_price is None:
+                                        yf_data = get_yfinance_quote(alt_symbol)
+                                        if yf_data and yf_data.get('c', 0) > 0:
+                                            alt_price = yf_data['c']
+                                            price_cache[alt_symbol] = alt_price
+                                        else:
+                                            continue
+                                    if alt_price <= invest:
+                                        alt_shares = int(invest // alt_price)
+                                        alt_used = alt_shares * alt_price
+                                        if alt_shares > 0:
+                                            # Hisse adı bul
+                                            alt_name = alt_symbol
+                                            for s, n, _ in recommendations:
+                                                if s == alt_symbol:
+                                                    alt_name = n
+                                                    break
+                                            final_portfolio.append((alt_symbol, alt_name, alt_used, alt_shares, alt_price, invest))
+                                            used_symbols.add(alt_symbol)
+                                            found = True
+                                            break
+                        # Hala bulunamazsa, slot boş kalsın (uyarı verilecek)
+                        if not found:
+                            final_portfolio.append((symbol, name, invest, 0, price, invest))
+                            used_symbols.add(symbol)
+                    else:
+                        final_portfolio.append((symbol, name, used, shares, price, invest))
+                        used_symbols.add(symbol)
+
+                # Kalan tutarlarla tekrar en ucuzdan başlayarak hisse alınabiliyorsa ekle
+                kalan_artan = amount - sum(x[2] for x in final_portfolio)
+                idx = 0
+                while kalan_artan > 0 and idx < len(final_portfolio):
+                    symbol, name, used, shares, price, invest = final_portfolio[idx]
+                    if price <= kalan_artan:
+                        ek_hisse = int(kalan_artan // price)
+                        if ek_hisse > 0:
+                            final_portfolio[idx] = (symbol, name, used + ek_hisse * price, shares + ek_hisse, price, invest)
+                            kalan_artan -= ek_hisse * price
+                    idx += 1
+
+                # LLM analizini, final_portfolio oluştuktan sonra ve sadece portföydeki hisselerle yap
+                llm_advice = ""
+                try:
+                    temp_portfolio_syms = [rec[0] for rec in final_portfolio]
+                    llm_prompt = f"Ben {amount} TL ile yatırım yapmak istiyorum. Risk profili: {risk_profile}. Önerilen hisseler: {temp_portfolio_syms}. Bu portföy hakkında kısa bir yorum yap."
+                    llm_advice_raw = ask_groq(llm_prompt)
+                    # Remove unwanted Japanese 'が高い' artifacts if present
+                    if llm_advice_raw:
+                        llm_advice_clean = llm_advice_raw.replace('が高い', '')
+                        if not llm_advice_clean.startswith("API Error"):
+                            llm_advice = f"\n🤖 Analiz: {llm_advice_clean}"
+                except:
+                    llm_advice = ""
+
+                # Eğer hiç hisse alınamıyorsa uyarı ver
+                if all(shares == 0 for _, _, _, shares, _, _ in final_portfolio):
+                    if language == 'tr':
+                        answer = f"💼 {amount:,} TL İÇİN YATIRIM TAVSİYESİ:\n\n"
+                        answer += f"📊 Risk Profili: {risk_profile.upper()}\n\n"
+                        answer += "❗ Bu tutarla portföy oluşturulamıyor. Lütfen daha yüksek bir tutar girin.\n"
+                        return {"answer": answer, "chart": None}
+                    else:
+                        answer = f"💼 INVESTMENT ADVICE FOR {amount:,} TL:\n\n"
+                        answer += f"📊 Risk Profile: {risk_profile.upper()}\n\n"
+                        answer += "❗ Cannot create a portfolio with this amount. Please enter a higher amount.\n"
+                        return {"answer": answer, "chart": None}
+
                 if language == 'tr':
                     answer = f"💼 {amount:,} TL İÇİN YATIRIM TAVSİYESİ:\n\n"
                     answer += f"📊 Risk Profili: {risk_profile.upper()}\n\n"
                     answer += "🎯 Önerilen Portföy:\n"
-                    
-                    for symbol, name, ratio in recommendations:
-                        investment = amount * ratio
-                        shares = int(investment / 100)  # Yaklaşık hisse sayısı
-                        answer += f"   • {symbol} ({name}): {investment:,.0f} TL ({shares} hisse)\n"
-                    
-                    answer += f"\n💰 Toplam Yatırım: {amount:,} TL{llm_advice}\n"
+                    for symbol, name, used, shares, price, invest in final_portfolio:
+                        if shares > 0:
+                            answer += f"   • {symbol} ({name}): {used:,.0f} TL ({shares} hisse, 1 hisse ≈ {price:.2f} TL)\n"
+                        else:
+                            answer += f"   • {symbol} ({name}): {invest:,.0f} TL (Miktar yetersiz, 1 hisse alınamaz)\n"
+                    answer += f"\n💰 Toplam Yatırım: {sum(x[2] for x in final_portfolio):,.0f} TL{llm_advice}\n"
                     answer += "⚠️ Bu tavsiyeler sadece referans amaçlıdır!\n"
-                    #answer += "🕐 Borsa saati: 10:00-18:00"
+                    example_amount = f"{amount:,}".replace(",", ".")
+                    answer += f"\n⚠️ Risk profilinize göre yüksek ve düşük riskli opsiyonları da gösterebiliriz. \"{example_amount} tl var düşük riskle hangi hisseleri alabilirim?\" \n\"{example_amount} tl var yüksek riskli portföy oluşturur musun?\" gibi yazabilirsiniz.\n"
                 else:
                     answer = f"💼 INVESTMENT ADVICE FOR {amount:,} TL:\n\n"
                     answer += f"📊 Risk Profile: {risk_profile.upper()}\n\n"
                     answer += "🎯 Recommended Portfolio:\n"
-                    
-                    for symbol, name, ratio in recommendations:
-                        investment = amount * ratio
-                        shares = int(investment / 100)
-                        answer += f"   • {symbol} ({name}): {investment:,.0f} TL ({shares} shares)\n"
-                    
-                    answer += f"\n💰 Total Investment: {amount:,} TL{llm_advice}\n"
+                    for symbol, name, used, shares, price, invest in final_portfolio:
+                        if shares > 0:
+                            answer += f"   • {symbol} ({name}): {used:,.0f} TL ({shares} shares, 1 share ≈ {price:.2f} TL)\n"
+                        else:
+                            answer += f"   • {symbol} ({name}): {invest:,.0f} TL (Insufficient for 1 share)\n"
+                    answer += f"\n💰 Total Investment: {sum(x[2] for x in final_portfolio):,.0f} TL{llm_advice}\n"
                     answer += "⚠️ These recommendations are for reference only!\n"
-                    answer += "🕐 Market hours: 10:00-18:00"
-                
+                    answer += "🕐 Market hours: 10:00-18:00\n"
+                    answer += f"\nWe can show you high and low risk options according to your risk profile. For example: 'What can I buy with {amount:,} TL with low risk?'\n"
                 return {"answer": answer, "chart": None}
             except Exception as e:
                 print(f"Error processing investment advice: {e}")
@@ -1494,7 +1662,26 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                 else:
                     return {"answer": f"❌ Could not perform sentiment analysis for {hisse}.", "chart": None}
         
-        # Eğer hiçbir anahtar kelimeye uymuyorsa, LLM'e sor
+
+        # Eğer hiçbir anahtar kelimeye uymuyorsa, önce finans/borsa ile ilgili olup olmadığını kontrol et
+        finance_keywords = [
+            'borsa', 'hisse', 'yatırım', 'finans','şirket', 'portföy', 'endeks', 'dolar', 'altın', 'kripto', 'bitcoin',
+            'usd', 'eur', 'euro', 'doviz', 'döviz', 'faiz', 'tahvil', 'fon', 'viop', 'vadeli', 'borsada',
+            'stock', 'investment', 'finance', 'portfolio', 'index', 'currency', 'gold', 'crypto', 'forex',
+            'nasdaq', 'nyse', 'sp500', 'dow', 'exchange', 'parite', 'usdtry', 'eurtry', 'usd/tl', 'eur/tl',
+            'trader', 'trading', 'analiz', 'teknik analiz', 'temel analiz', 'grafik', 'fiyat', 'price', 'news', 'haber',
+        ]
+        finance_keywords += [k.upper() for k in finance_keywords]
+        finance_keywords = list(set([normalize_text(k) for k in finance_keywords]))
+        if not any(word in question_lower for word in finance_keywords):
+            # Finans/borsa ile alakalı değilse profesyonel cevap ver
+            if language == 'tr':
+                answer = "❗ Bu asistan sadece finans, borsa ve yatırım ile ilgili soruları yanıtlar. Diğer konular için lütfen finbotdestek@gmail.com adresine yazabilirsiniz."
+            else:
+                answer = "❗ This assistant only answers questions about finance, stocks, and investment. For other topics, please contact finbotdestek@gmail.com."
+            return {"answer": answer, "chart": None}
+
+        # Eğer finans/borsa ile ilgiliyse, LLM'e sor
         print("No specific command detected, using LLM for general questions")
         try:
             llm_response = ask_groq(question)
@@ -1721,4 +1908,4 @@ def analyze_sector_sentiment(sentiment_data: Dict, stock_code: str) -> Dict:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)

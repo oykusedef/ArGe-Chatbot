@@ -55,7 +55,9 @@ const Chatbot = () => {
 💡 Grafik süreleri: 1 ay, 3 ay, 6 ay, 1 yıl
 💡 Tahmin yöntemleri: Prophet, ARIMA, LSTM
 💡 Risk profilleri: Düşük, Orta, Yüksek
-📰 Sentiment analizi: Son haberler` }
+📰 Sentiment analizi: Son haberler
+🤖 Otomatik Strateji: 'ARCLK otomatik strateji' veya 'ASELS al/tut/sat önerisi'`
+ }
   ]);
   const [loading, setLoading] = useState(false);
   const [language, setLanguage] = useState('tr');

@@ -1,3 +1,9 @@
+def remove_non_latin(text):
+    # Sadece Latin harfleri, rakamlar, Türkçe karakterler ve temel noktalama işaretlerini bırak
+    import re
+    # Türkçe karakterler dahil Latin harfler
+    allowed = r"[^a-zA-Z0-9çÇğĞıİöÖşŞüÜ.,:;!?()\[\]{}<>@#$%^&*\-_=+/'\"\s]"
+    return re.sub(allowed, '', text)
 import os
 import pandas as pd
 import requests
@@ -755,61 +761,32 @@ def get_yfinance_chart(symbol, days=30):
         return None
 
 def get_forecast_prophet(symbol, days=30):
-    """Prophet ile hisse fiyat tahmini"""
+    """Prophet ile hisse fiyat tahmini (sadece 1 gün sonrası, tatil/haftasonu kontrolü ile)"""
     try:
         yf_symbol = f"{symbol}.IS"
         ticker = yf.Ticker(yf_symbol)
-        
-        # Son 1 yıllık veri al
         hist = ticker.history(period="1y")
-        
-        print(f"Prophet için {symbol} verisi: {len(hist)} satır")
-        
-        if hist.empty:
-            print(f"{symbol} için veri boş!")
+        if hist.empty or len(hist) < 30:
             return None
-        
-        if len(hist) < 30:  # En az 30 gün veri gerekli
-            print(f"{symbol} için yeterli veri yok: {len(hist)} satır")
-            return None
-        
-        # Prophet için veri hazırla
         df = hist.reset_index()
         df = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
-        
-        # Timezone'u kaldır (Prophet timezone desteklemiyor)
         df['ds'] = df['ds'].dt.tz_localize(None)
-        
-        # NaN değerleri temizle
         df = df.dropna()
-        
-        print(f"Prophet modeli eğitiliyor... Veri şekli: {df.shape}")
-        print(f"Veri örneği: {df.head()}")
-        
-        # Prophet modeli oluştur (daha basit ayarlar)
-        model = Prophet(
-            yearly_seasonality=False,
-            weekly_seasonality=False,
-            daily_seasonality=False,
-            changepoint_prior_scale=0.01
-        )
+        model = Prophet(yearly_seasonality=False, weekly_seasonality=False, daily_seasonality=False, changepoint_prior_scale=0.01)
         model.fit(df)
-        
-        # Gelecek günler için tahmin
-        future = model.make_future_dataframe(periods=days)
+        last_date = df['ds'].max()
+        next_trading_day = get_next_trading_day(last_date)
+        future = pd.DataFrame({'ds': [next_trading_day]})
         forecast = model.predict(future)
-        
-        # Son N günün tahminini al
-        predictions = forecast.tail(days)
-        
-        print(f"Tahmin tamamlandı! {len(predictions)} gün tahmin")
-        print(f"İlk tahmin: {predictions['yhat'].iloc[0]:.2f}")
-        
+        # Son 5 günün kapanış fiyatı
+        last5_hist = hist.tail(5)
         return {
-            'dates': [d.timestamp() for d in predictions['ds']],
-            'predictions': predictions['yhat'].tolist(),
-            'lower': predictions['yhat_lower'].tolist(),
-            'upper': predictions['yhat_upper'].tolist()
+            'dates': [d.timestamp() for d in last5_hist.index] + [next_trading_day.timestamp()],
+            'actuals': last5_hist['Close'].tolist(),
+            'predictions': [forecast['yhat'].iloc[0]],
+            'pred_date': next_trading_day.timestamp(),
+            'lower': [forecast['yhat_lower'].iloc[0]],
+            'upper': [forecast['yhat_upper'].iloc[0]]
         }
     except Exception as e:
         print(f"Prophet forecast exception for {symbol}: {e}")
@@ -921,10 +898,167 @@ def get_available_stocks(language="tr"):
     else:
         stocks_list = "\n".join([f"• {stock}" for stock in BIST_STOCKS])
         return f"📋 AVAILABLE STOCKS (Real-time data):\n\n{stocks_list}\n\n💡 Example usage:\n• 'CCOLA current price'\n• 'THYAO chart'\n• 'GARAN news'"
+# Türkiye resmi tatilleri - 2025
+TURKEY_HOLIDAYS_2025 = {
+    datetime(2025, 1, 1),   # Yeni Yıl
+    datetime(2025, 3, 29),  # Ramazan Bayramı Arefesi
+    datetime(2025, 3, 30),
+    datetime(2025, 3, 31),
+    datetime(2025, 4, 1),
+    datetime(2025, 4, 23),  # Ulusal Egemenlik ve Çocuk Bayramı
+    datetime(2025, 5, 1),   # Emek ve Dayanışma Günü
+    datetime(2025, 5, 19),  # Atatürk'ü Anma, Gençlik ve Spor Bayramı
+    datetime(2025, 6, 5),   # Kurban Bayramı Arefesi
+    datetime(2025, 6, 6),
+    datetime(2025, 6, 7),
+    datetime(2025, 6, 8),
+    datetime(2025, 6, 9),
+    datetime(2025, 7, 15),  # Demokrasi ve Milli Birlik Günü
+    datetime(2025, 8, 30),  # Zafer Bayramı
+    datetime(2025, 10, 28), # Cumhuriyet Bayramı Arefesi
+    datetime(2025, 10, 29)  # Cumhuriyet Bayramı
+}
+
+def get_next_trading_day(date):
+    """Hafta sonlarını ve Türkiye 2025 resmi tatillerini atlayarak bir sonraki işlem gününü döndürür."""
+    next_day = date + timedelta(days=1)
+    while (
+        next_day.weekday() >= 5  # Cumartesi/Pazar
+        or next_day in TURKEY_HOLIDAYS_2025
+    ):
+        next_day += timedelta(days=1)
+    return next_day
 
 @app.post("/ask")
 async def ask_question(question: str = Form(...), language: str = Form("tr")):
+    import unicodedata
+
+    def normalize_text(text):
+        text = text.lower()
+        text = unicodedata.normalize('NFD', text)
+        text = ''.join([c for c in text if unicodedata.category(c) != 'Mn'])
+        return text
+
     print(f"Received request - question: '{question}', language: '{language}'")
+    question_lower = normalize_text(question)
+    print(f"Processing question: '{question_lower}'")
+
+    # "Hangi şirketler mevcut" sorusu
+    if any(word in question_lower for word in ['hangi şirket', 'mevcut', 'available', 'companies', 'stocks']):
+        print("Detected 'available stocks' question")
+        result = {"answer": get_available_stocks(language), "chart": None}
+        print(f"Returning: {result}")
+        return result
+
+    # Türk borsa haberleri sorusu
+    if any(word in question_lower for word in ['türk borsa haberleri', 'güncel haberler', 'borsa haberleri', 'turkish news', 'market news']):
+        print("Detected 'Turkish stock news' question")
+        try:
+            news_data = get_turkish_stock_news()
+            if news_data['success'] and news_data['news']:
+                if language == 'tr':
+                    answer = f"📰 GÜNCEL TÜRK BORSA HABERLERİ ({news_data['total']} haber):\n\n"
+                else:
+                    answer = f"📰 CURRENT TURKISH MARKET NEWS ({news_data['total']} articles):\n\n"
+                for i, article in enumerate(news_data['news'][:5], 1):
+                    answer += f"{i}. {article.get('title', 'Başlık yok')}\n"
+                    answer += f"   📰 {article.get('source', 'Bilinmeyen')} | {article.get('published_at', 'Tarih bilgisi yok')[:10]}\n"
+                    if article.get('description'):
+                        answer += f"   📝 {article['description'][:100]}...\n"
+                    answer += "\n"
+            else:
+                answer = "❌ Haber bulunamadı. Lütfen daha sonra tekrar deneyin." if language == 'tr' else "❌ No news found. Please try again later."
+            return {"answer": answer, "chart": None}
+        except Exception as e:
+            print(f"Error getting Turkish news: {e}")
+            error_msg = "❌ Haber alınırken bir hata oluştu." if language == 'tr' else "❌ An error occurred while fetching news."
+            return {"answer": error_msg, "chart": None}
+
+    # Hisse kodu tespiti
+    hisse_list = []
+    for code in BIST_STOCKS:
+        if code.lower() in question_lower:
+            hisse_list.append(code)
+    for company_name, stock_code in COMPANY_TO_CODE.items():
+        if company_name in question_lower and stock_code not in hisse_list:
+            hisse_list.append(stock_code)
+    if not hisse_list:
+        llm_code = get_stock_code_from_llm(question)
+        if llm_code:
+            hisse_list.append(llm_code)
+    hisse_list = hisse_list[:2]
+    hisse = hisse_list[0] if hisse_list else None
+
+    # Forecasting sorusu mu?
+    if hisse and any(word in question_lower for word in ['tahmin', 'forecast', 'gelecek', 'future', 'prediction']):
+        print(f"Getting forecast for {hisse}")
+        try:
+            forecast_method = 'prophet'
+            if 'arima' in question_lower:
+                forecast_method = 'arima'
+            elif 'lstm' in question_lower or 'neural' in question_lower:
+                forecast_method = 'lstm'
+            elif 'prophet' in question_lower:
+                forecast_method = 'prophet'
+
+            # Tahmin verisini al
+            if forecast_method == 'prophet':
+                forecast_data = get_forecast_prophet(hisse, days=1)
+            elif forecast_method == 'arima':
+                forecast_data = get_forecast_arima(hisse, days=1)
+            elif forecast_method == 'lstm':
+                forecast_data = get_forecast_lstm(hisse, days=1)
+            else:
+                forecast_data = get_forecast_prophet(hisse, days=1)
+
+            if forecast_data:
+                # Prophet fonksiyonu son 5 gün actuals ve 1 günlük tahmini içeriyor
+                dates = [datetime.fromtimestamp(ts) for ts in forecast_data['dates']]
+                actuals = forecast_data.get('actuals', [])
+                pred = forecast_data['predictions'][0]
+
+                plt.figure(figsize=(8, 5))
+                # Son 5 gün mavi çizgi
+                if actuals:
+                    plt.plot(dates[:-1], actuals, marker='o', color='blue', label='Son 5 Gün Fiyatı')
+                # Tahmin edilen gün kırmızı nokta
+                plt.plot([dates[-1]], [pred], marker='o', color='red', label='Tahmin (1 gün sonrası)')
+                # Prophet güven aralığı
+                if 'lower' in forecast_data and 'upper' in forecast_data:
+                    plt.errorbar(
+                        [dates[-1]], [pred],
+                        yerr=[[pred - forecast_data['lower'][0]], [forecast_data['upper'][0] - pred]],
+                        fmt='o', color='red', alpha=0.3, label='Güven Aralığı'
+                    )
+
+                plt.title(f"{hisse} Son 5 Gün ve 1 Günlük Tahmin ({forecast_method.upper()})", fontsize=13, fontweight='bold')
+                plt.xlabel('Tarih', fontsize=11)
+                plt.ylabel('Fiyat (TL)', fontsize=11)
+                plt.grid(True, alpha=0.3)
+                plt.legend()
+                plt.tight_layout()
+
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', dpi=200, bbox_inches='tight')
+                plt.close()
+                buf.seek(0)
+                chart_b64 = base64.b64encode(buf.read()).decode('utf-8')
+
+                date_str = dates[-1].strftime('%d.%m.%Y')
+                answer = (
+                    f"🔮 {hisse} 1 GÜN SONRAKİ TAHMİN ({forecast_method.upper()}):\n\n📊 {date_str} tahmini: {pred:.2f} TL\n⚠️ Bu tahminler sadece referans amaçlıdır!"
+                    if language == 'tr'
+                    else f"🔮 {hisse} 1 DAY FORECAST ({forecast_method.upper()}):\n\n📊 Prediction for {date_str}: {pred:.2f} TL\n⚠️ These predictions are for reference only!"
+                )
+                return {"answer": answer, "chart": chart_b64}
+            else:
+                answer = f"❌ {hisse} için tahmin yapılamadı. Yeterli veri yok." if language == 'tr' else f"❌ Could not forecast {hisse}. Insufficient data."
+                return {"answer": answer, "chart": None}
+
+        except Exception as e:
+            print(f"Error processing forecast request: {e}")
+            err_msg = f"❌ {hisse} için tahmin oluşturulamadı." if language == 'tr' else f"❌ Could not create forecast for {hisse}."
+            return {"answer": err_msg, "chart": None}
     try:
         import unicodedata
         def normalize_text(text):
@@ -943,7 +1077,26 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
             result = {"answer": get_available_stocks(language), "chart": None}
             print(f"Returning: {result}")
             return result
-        
+
+        if hisse and any(word in question_lower for word in ['otomatik strateji', 'bugünkü strateji', 'al/tut/sat önerisi', 'yatırım stratejisi','analist agent','analiz ajanı','al/tut/sat kararı',' al tut sat kararı',' al tut sat','al sat tut','al/tut/sat önerisi']):
+            try:
+                result = generate_auto_strategy(hisse, company_name=None, use_llm=True)
+                answer = (
+                    f"📈 {hisse} OTOMATİK STRATEJİ ÖNERİSİ:\n"
+                    f"💰 Fiyat: {result['current_price']} TL (%{result['change_pct']:.2f})\n"
+                    f"📊 RSI: {result['rsi']}, MACD Hist: {result['macd_hist']}\n"
+                    f"📰 Sentiment: {result['news_sentiment_label']} \n"
+                    f"🎯 Karar: {result['decision']}\n"
+                    f"💡 Sebep: {result['rationale']}\n"
+                )
+                if result.get('llm_summary'):
+                    answer += f"\n🤖 Açıklama: {result['llm_summary']}"
+                return {"answer": answer, "chart": None}
+            except Exception as e:
+                print(f"Auto strategy error: {e}")
+                return {"answer": "❌ Otomatik strateji hesaplanamadı.", "chart": None}
+
+
         # Türk borsa haberleri sorusu
         if any(word in question_lower for word in ['türk borsa haberleri', 'güncel haberler', 'borsa haberleri', 'turkish news', 'market news']):
             print("Detected 'Turkish stock news' question")
@@ -1030,7 +1183,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                         plt.fill_between(dates, forecast_data['lower'], forecast_data['upper'], 
                                        alpha=0.3, color='green', label='Güven Aralığı')
                     
-                    plt.title(f"{hisse} 30 Günlük Fiyat Tahmini ({forecast_method.upper()})", 
+                    plt.title(f"{hisse} Fiyat Tahmini ({forecast_method.upper()})", 
                              fontsize=14, fontweight='bold')
                     plt.xlabel('Tarih', fontsize=12)
                     plt.ylabel('Tahmin Fiyatı (TL)', fontsize=12)
@@ -1050,14 +1203,14 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     last_5_dates = [d.strftime('%d.%m') for d in dates[-5:]]
                     
                     if language == 'tr':
-                        answer = f"🔮 {hisse} 30 GÜNLÜK TAHMİN ({forecast_method.upper()}):\n\n"
-                        answer += "📊 Son 5 gün tahmini:\n"
+                        answer = f"🔮 {hisse} GÜNLÜK TAHMİN ({forecast_method.upper()}):\n\n"
+                        answer += "📊 Borsada işlem görecek bir sonraki günün tahmini:\n"
                         for i, (date, pred) in enumerate(zip(last_5_dates, last_5_predictions), 1):
                             answer += f"   {date}: {pred:.2f} TL\n"
-                        answer += f"\n💡 Tahmin yöntemi: {forecast_method.upper()}\n"
+                        #answer += f"\n💡 Tahmin yöntemi: {forecast_method.upper()}\n"
                         answer += "⚠️ Bu tahminler sadece referans amaçlıdır!"
                     else:
-                        answer = f"🔮 {hisse} 30-DAY FORECAST ({forecast_method.upper()}):\n\n"
+                        answer = f"🔮 {hisse} DAY FORECAST ({forecast_method.upper()}):\n\n"
                         answer += "📊 Last 5 days prediction:\n"
                         for i, (date, pred) in enumerate(zip(last_5_dates, last_5_predictions), 1):
                             answer += f"   {date}: {pred:.2f} TL\n"
@@ -1167,7 +1320,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
             'tl var ne alayim', 'tl var ne alabilirim', 'tl var hangi hisseleri alabilirim',
             'tl var hangi hisseleri alinir', 'tl var hangi hisseleri alinabilir',
             'tl var portföy', 'tl var portfoy', 'tl var portföy önerisi', 'tl var portfoy onerisi',
-            'tl var', 'ne yapayim', 'hangi hisseler', 'hangi hisse', 'hangi hisseyi',
+            'tl var', 'ne yapayim', 'hangi hisseler', 'hangi hisse', 'hangi hisseyi','öner',"tl ile nasıl yatırım yapabilirim","tl ile ne alabilirim"
         ]
         # Ayrıca, anahtar kelimelerin büyük harfli varyantlarını da ekle
         portfolio_keywords += [k.upper() for k in portfolio_keywords]
@@ -1400,9 +1553,9 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     temp_portfolio_syms = [rec[0] for rec in final_portfolio]
                     llm_prompt = f"Ben {amount} TL ile yatırım yapmak istiyorum. Risk profili: {risk_profile}. Önerilen hisseler: {temp_portfolio_syms}. Bu portföy hakkında kısa bir yorum yap."
                     llm_advice_raw = ask_groq(llm_prompt)
-                    # Remove unwanted Japanese 'が高い' artifacts if present
+                    # Latin olmayan karakterleri temizle
                     if llm_advice_raw:
-                        llm_advice_clean = llm_advice_raw.replace('が高い', '')
+                        llm_advice_clean = remove_non_latin(llm_advice_raw)
                         if not llm_advice_clean.startswith("API Error"):
                             llm_advice = f"\n🤖 Analiz: {llm_advice_clean}"
                 except:
@@ -1476,7 +1629,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     answer += f"📊 Günlük Yüksek: {high:.2f} TL\n"
                     answer += f"📉 Günlük Düşük: {low:.2f} TL\n"
                     answer += f"📈 İşlem Hacmi: {volume:,} adet\n\n"
-                    answer += "🕐 *Gerçek zamanlı veri (Yahoo Finance)*"
+                    answer += "🕐 *Gerçek zamanlı veri "
                 else:
                     answer = f"🎯 {hisse} CURRENT PRICE INFO:\n\n"
                     answer += f"💰 Current Price: {current_price:.2f} TL\n"
@@ -1484,7 +1637,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     answer += f"📊 Daily High: {high:.2f} TL\n"
                     answer += f"📉 Daily Low: {low:.2f} TL\n"
                     answer += f"📈 Volume: {volume:,} shares\n\n"
-                    answer += "🕐 *Real-time data (Yahoo Finance)*"
+                    answer += "🕐 *Real-time data"
                 
                 return {"answer": answer, "chart": None}
             else:
@@ -1537,7 +1690,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     sentiment_color = "Nötr"
                 
                 if language == 'tr':
-                    answer = f"📰 {hisse} SOSYAL MEDYA SENTIMENT ANALİZİ:\n\n"
+                    answer = f"📰 {hisse} HABER SENTIMENT ANALİZİ:\n\n"
                     answer += f"{sentiment_emoji} Genel Hava: {sentiment_color}\n"
                     answer += f"📊 Sentiment Skoru: {sentiment_score:.3f}\n"
                     #answer += f"🎯 Güven Skoru: {sentiment_data['confidence']:.2f}\n"
@@ -1595,7 +1748,7 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                     
                     answer += "\n💡 Bu analiz son haberlere dayanmaktadır."
                 else:
-                    answer = f"📰 {hisse} SOCIAL MEDIA SENTIMENT ANALYSIS:\n\n"
+                    answer = f"📰 {hisse} NEWS SENTIMENT ANALYSIS:\n\n"
                     answer += f"{sentiment_emoji} General Sentiment: {sentiment_color}\n"
                     answer += f"📊 Sentiment Score: {sentiment_score:.3f}\n"
                     answer += f"🎯 Confidence Score: {sentiment_data['confidence']:.2f}\n"
@@ -1665,11 +1818,14 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
 
         # Eğer hiçbir anahtar kelimeye uymuyorsa, önce finans/borsa ile ilgili olup olmadığını kontrol et
         finance_keywords = [
-            'borsa', 'hisse', 'yatırım', 'finans','şirket', 'portföy', 'endeks', 'dolar', 'altın', 'kripto', 'bitcoin',
-            'usd', 'eur', 'euro', 'doviz', 'döviz', 'faiz', 'tahvil', 'fon', 'viop', 'vadeli', 'borsada',
-            'stock', 'investment', 'finance', 'portfolio', 'index', 'currency', 'gold', 'crypto', 'forex',
-            'nasdaq', 'nyse', 'sp500', 'dow', 'exchange', 'parite', 'usdtry', 'eurtry', 'usd/tl', 'eur/tl',
-            'trader', 'trading', 'analiz', 'teknik analiz', 'temel analiz', 'grafik', 'fiyat', 'price', 'news', 'haber',
+           'borsa', 'hisse', 'yatırım', 'finans', 'şirket', 'portföy', 'endeks', 'dolar', 'altın', 'kripto', 'bitcoin',
+            'usd', 'eur', 'euro', 'doviz', 'döviz', 'faiz', 'tahvil', 'fon', 'viop', 'vadeli', 'borsada', 'borsacı',
+            'strateji', 'parite', 'usdtry', 'eurtry', 'usd/tl', 'eur/tl', 'trader', 'trading', 'analiz', 
+            'teknik analiz', 'temel analiz', 'grafik', 'fiyat', 'haber', 'borsa haberi', 'borsa analizi',
+            'yatırımcı', 'yatırım tavsiyesi', 'sermaye', 'kar', 'zarar', 'temettü', 'bedelsiz', 'hisse senedi',
+            'bilanço', 'gelir tablosu', 'finansal rapor', 'piyasa değeri', 'arz', 'talep', 'kapanış', 'açılış',
+            'alım satım', 'işlem hacmi', 'emir', 'destek', 'direnç', 'stop loss', 'kaldıraç', 'marjin', 'volatilite',
+            'borsa istanbul', 'bist', 'bist100', 'bist30', 'endeks fonu', 'yatırım fonu', 'borsa fonu', 'etf',
         ]
         finance_keywords += [k.upper() for k in finance_keywords]
         finance_keywords = list(set([normalize_text(k) for k in finance_keywords]))
@@ -1700,7 +1856,9 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                 answer += "💡 Grafik süreleri: 1 ay, 3 ay, 6 ay, 1 yıl\n"
                 answer += "💡 Tahmin yöntemleri: Prophet, ARIMA, LSTM\n"
                 answer += "💡 Risk profilleri: Düşük, Orta, Yüksek\n"
-                answer += "💡 Sentiment analizi: Son haberler"
+                answer += "💡 Sentiment analizi: Son haberler\n"
+                answer += "🤖 Otomatik Strateji: 'ARCLK bugünkü strateji' veya 'ASELS al/tut/sat'\n"
+                
             else:
                 answer = "🤖 How can FINBOT help you?\n\n"
                 answer += "📈 Current price: 'ARCLK current price'\n"
@@ -1905,6 +2063,225 @@ def analyze_sector_sentiment(sentiment_data: Dict, stock_code: str) -> Dict:
         'sector_keywords_found': list(set(sector_keywords_found)),
         'sector_relevance': sector_relevance
     }
+
+# Auto Strategy Agent 
+# Usage: copy the functions and endpoint into app.py (same level as other endpoints)
+# This file assumes `app`, `get_finnhub_quote`, `get_yfinance_quote`, `get_turkish_stock_news_by_company`,
+# and `ask_groq` already exist in app.py . It uses yfinance for historical data.
+
+
+
+def calculate_rsi(prices: pd.Series, period: int = 14) -> float:
+    """Calculates the Relative Strength Index (RSI) for a price series.
+    Returns the last RSI value (float)."""
+    if prices is None or len(prices) < period + 1:
+        return None
+    delta = prices.diff()
+    up = delta.clip(lower=0)
+    down = -1 * delta.clip(upper=0)
+
+    # Use Wilder smoothing
+    roll_up = up.ewm(alpha=1/period, adjust=False).mean()
+    roll_down = down.ewm(alpha=1/period, adjust=False).mean()
+
+    rs = roll_up / roll_down
+    rsi = 100 - (100 / (1 + rs))
+
+    # Return last RSI value as float
+    try:
+        last_rsi = float(rsi.iloc[-1])
+    except Exception:
+        last_rsi = None
+    return last_rsi
+
+
+def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> dict:
+    """Calculates MACD, signal and histogram. Returns last values as dict.
+    Keys: macd, signal, hist (floats)"""
+    if prices is None or len(prices) < slow + signal:
+        return {'macd': None, 'signal': None, 'hist': None}
+
+    ema_fast = prices.ewm(span=fast, adjust=False).mean()
+    ema_slow = prices.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    macd_hist = macd_line - signal_line
+
+    try:
+        return {
+            'macd': float(macd_line.iloc[-1]),
+            'signal': float(signal_line.iloc[-1]),
+            'hist': float(macd_hist.iloc[-1])
+        }
+    except Exception:
+        return {'macd': None, 'signal': None, 'hist': None}
+
+
+def get_historical_close_prices(symbol: str, days: int = 120) -> pd.Series:
+    """Fetch historical close prices for BIST ticker (symbol like 'THYAO' or 'CCOLA').
+    Returns a pandas Series indexed by datetime with Close prices or raises an error."""
+    try:
+        yf_symbol = f"{symbol}.IS"
+        ticker = yf.Ticker(yf_symbol)
+        # Use at least `days` calendar days; if market closed some days will be missing
+        hist = ticker.history(period=f"{days}d")
+        if hist.empty:
+            return pd.Series(dtype=float)
+        return hist['Close'].dropna()
+    except Exception as e:
+        print(f"get_historical_close_prices error for {symbol}: {e}")
+        return pd.Series(dtype=float)
+
+
+def generate_auto_strategy(symbol: str, company_name: str = None, days: int = 120, use_llm: bool = True) -> dict:
+    """Generates an automatic AL/TUT/SAT recommendation for given BIST symbol.
+
+    Returns a dict containing: symbol, price, price_change_pct, rsi, macd, news_sentiment,
+    decision (AL/TUT/SAT), rationale (text), details (raw values).
+    """
+    # 1) Current quote
+    quote = get_finnhub_quote(symbol)
+    if not quote:
+        raise ValueError(f"Gerçek zamanlı fiyat alınamadı: {symbol}")
+
+    current_price = float(quote.get('c', 0) or 0)
+    change = float(quote.get('d', 0) or 0)
+    change_pct = float(quote.get('dp', 0) or 0)
+
+    # 2) Historical prices -> RSI & MACD
+    closes = get_historical_close_prices(symbol, days=days)
+    rsi = calculate_rsi(closes, period=14)
+    macd_data = calculate_macd(closes)
+
+    # 3) News sentiment
+    sentiment_info = {'sentiment_score': 0.0, 'sentiment_label': 'Nötr', 'confidence': 0.0}
+    try:
+        # company_name fallback to symbol if not provided
+        comp = company_name if company_name else symbol
+        sentiment_info = get_news_sentiment(comp, symbol)
+    except Exception as e:
+        print(f"Haber sentiment alınamadı: {e}")
+
+    sentiment_score = float(sentiment_info.get('sentiment_score', 0.0) or 0.0)
+    sentiment_label = sentiment_info.get('sentiment_label', 'Nötr')
+    sentiment_conf = float(sentiment_info.get('confidence', 0.0) or 0.0)
+
+    # 4) Simple rule-based decision
+    # Prioritize extreme RSI and sentiment signals, then MACD histogram direction, then price momentum
+    decision = 'TUT'
+    reasons = []
+
+    # RSI rules
+    if rsi is not None:
+        if rsi < 30:
+            reasons.append(f"RSI düşük ({rsi:.1f}) → potansiyel aşırı satım")
+        elif rsi > 70:
+            reasons.append(f"RSI yüksek ({rsi:.1f}) → potansiyel aşırı alım")
+
+    # Sentiment rules
+    if sentiment_score > 0.15:
+        reasons.append(f"Haberler olumlu (score={sentiment_score:.4f})")
+    elif sentiment_score < -0.15:
+        reasons.append(f"Haberler olumsuz (score={sentiment_score:.4f})")
+
+    # MACD momentum
+    macd_hist = macd_data.get('hist')
+    if macd_hist is not None:
+        if macd_hist > 0:
+            reasons.append(f"MACD histogram pozitif ({macd_hist:.4f}) → yükseliş momentumu")
+        elif macd_hist < 0:
+            reasons.append(f"MACD histogram negatif ({macd_hist:.4f}) → düşüş momentumu")
+
+    # Decision combining rules (simple priority logic)
+    # 1) Strong buy signals
+    if (rsi is not None and rsi < 30 and sentiment_score > 0.1) or (macd_hist is not None and macd_hist > 0 and sentiment_score > 0.2):
+        decision = 'AL'
+    # 2) Strong sell signals
+    elif (rsi is not None and rsi > 70 and sentiment_score < -0.1) or (macd_hist is not None and macd_hist < 0 and sentiment_score < -0.2):
+        decision = 'SAT'
+    else:
+        # Fallback heuristics
+        if rsi is not None and rsi < 35 and sentiment_score >= -0.05:
+            decision = 'AL'
+        elif rsi is not None and rsi > 65 and sentiment_score <= 0.05:
+            decision = 'SAT'
+        else:
+            decision = 'TUT'
+
+    # 5) Build rationale text (optionally refine with LLM)
+    rationale = ' / '.join(reasons) if reasons else 'Belirgin teknik veya haber sinyali yok.'
+
+    # Optionally ask LLM for a short summary (use_llm toggles this)
+    llm_summary = None
+    if use_llm:
+        try:
+
+                    # 🔹 Önce formatlı stringleri hazırla
+            rsi_str = f"{rsi:.2f}" if rsi is not None else "N/A"
+            macd_hist_str = f"{macd_hist:.4f}" if macd_hist is not None else "N/A"
+
+            prompt = f"""
+            Sen bir finans analisti olarak davran.  
+            Aşağıdaki teknik veriler ve otomatik sistemin verdiği kararı dikkate alarak, yatırımcıya anlaşılır ve net bir şekilde bu kararı destekleyen nedenleri 3-4 cümleyle açıkla.  
+    
+
+    Hisse: {symbol}
+    Son fiyat: {current_price:.2f} TL (günlük değişim %{change_pct:.2f})
+    RSI: {rsi_str}
+    MACD Histogram: {macd_hist_str}
+    Haber Sentiment Skoru: ({sentiment_label})
+    Karar: {decision}
+    
+    """
+            llm_text = ask_groq(prompt)
+            if isinstance(llm_text, str) and llm_text.strip():
+                llm_summary = llm_text.strip()
+        except Exception as e:
+            print(f"LLM özetleme başarısız: {e}")
+
+    result = {
+        'symbol': symbol,
+        'current_price': current_price,
+        'change': change,
+        'change_pct': change_pct,
+        'rsi': None if rsi is None else round(float(rsi), 2),
+        'macd': None if macd_data.get('macd') is None else round(float(macd_data.get('macd')), 6),
+        'macd_signal': None if macd_data.get('signal') is None else round(float(macd_data.get('signal')), 6),
+        'macd_hist': None if macd_data.get('hist') is None else round(float(macd_data.get('hist')), 6),
+        'news_sentiment_score': round(sentiment_score, 4),
+        'news_sentiment_label': sentiment_label,
+        'news_sentiment_confidence': round(sentiment_conf, 3),
+        'decision': decision,
+        'rationale': rationale,
+        'llm_summary': llm_summary,
+        'details': {
+            'reasons': reasons,
+            'recent_news_sample': sentiment_info.get('recent_news', [])[:3] if isinstance(sentiment_info, dict) else [],
+        }
+    }
+
+    return result
+
+
+# FastAPI endpoint to expose the auto strategy
+@app.get('/auto-strategy')
+async def auto_strategy(symbol: str, company_name: str = None, use_llm: bool = True):
+    """GET /auto-strategy?symbol=CCOLA&company_name=Coca%20Cola&use_llm=true
+
+    Returns JSON with the auto strategy decision and details.
+    """
+    symbol = symbol.strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail='symbol query param is required')
+
+    try:
+        result = generate_auto_strategy(symbol, company_name=company_name, use_llm=use_llm)
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        print(f"auto_strategy endpoint error: {e}")
+        raise HTTPException(status_code=500, detail='Internal server error while generating strategy')
 
 if __name__ == "__main__":
     import uvicorn

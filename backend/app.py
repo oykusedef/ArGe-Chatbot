@@ -36,15 +36,15 @@ FINNHUB_API_KEY = "d25p1d9r01qhge4dmh5gd25p1d9r01qhge4dmh60"
 
 # Finnhub API anahtarları
 FINNHUB_API_KEYS = [
-    "d25p1d9r01qhge4dmh5gd25p1d9r01qhge4dmh60",  # 🔑 API ANAHTARINIZ
-    "d25p181r01qhge4dmgbgd25p181r01qhge4dmgc0",  # 🔑 YEDEK API ANAHTARINIZ
+    "d25p1d9r01qhge4dmh5gd25p1d9r01qhge4dmh60",  # 🔑 API ANAHTARI
+    "d25p181r01qhge4dmgbgd25p181r01qhge4dmgc0",  # 🔑 YEDEK API
     "d25o23pr01qhge4di1egd25o23pr01qhge4di1f0",  # Yedek 1
     "d253na9r01qns40d15hgd253na9r01qns40d15i0"   # Yedek 2
 ]
 
 
 # News API Key (Ücretsiz: 100 istek/gün)
-NEWS_API_KEY = os.getenv("NEWS_API_KEY", "4VPDfIzFhUWoRyzmwtWso4rREi9fsIw18CSOcsx9")  # 🔑 NEWS API ANAHTARINIZI BURAYA YAZIN
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "4VPDfIzFhUWoRyzmwtWso4rREi9fsIw18CSOcsx9") 
 
 # Türkçe sentiment analizi için anahtar kelimeler
 TURKISH_POSITIVE_WORDS = [
@@ -173,11 +173,11 @@ def get_news_sentiment(company_name: str, stock_code: str) -> Dict:
                 all_news.append(formatted_article)
             print(f"Found {len(turkish_news['news'])} Turkish articles from The News API")
         
-        # Eğer The News API'den yeterli haber yoksa, News API'yi de dene
+        # Eğer The News API'den yeterli haber yoksa, News API'yi dener
         if len(all_news) < 5:
             newsapi = NewsApiClient(api_key=NEWS_API_KEY)
             
-            # Daha geniş arama terimleri oluştur
+            # Daha geniş arama terimleri oluşturur
             search_terms = [company_name, stock_code]
             
             # Şirket adına göre ek terimler ekle

@@ -763,30 +763,68 @@ def get_yfinance_chart(symbol, days=30):
 def get_forecast_prophet(symbol, days=30):
     """Prophet ile hisse fiyat tahmini (sadece 1 gün sonrası, tatil/haftasonu kontrolü ile)"""
     try:
+        import pandas as pd
         yf_symbol = f"{symbol}.IS"
         ticker = yf.Ticker(yf_symbol)
-        hist = ticker.history(period="1y")
-        if hist.empty or len(hist) < 30:
-            return None
+        # Try to get last 1 month of data, fallback to 10 days if needed
+        hist = ticker.history(period="1mo")
+        if hist.empty or len(hist) < 10:
+            hist = ticker.history(period="10d")
+        if hist.empty or len(hist) < 5:
+            print(f"Not enough data for {symbol}, got {len(hist)} rows.")
+            # Try to extrapolate from whatever is available
+            if not hist.empty:
+                df = hist.reset_index()
+                df = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
+                df['ds'] = df['ds'].dt.tz_localize(None)
+                df = df.dropna()
+                model = Prophet(yearly_seasonality=False, weekly_seasonality=False, daily_seasonality=False, changepoint_prior_scale=0.01)
+                model.fit(df)
+                last_date = df['ds'].max()
+                future_dates = []
+                d = last_date
+                while len(future_dates) < 5:
+                    d += pd.Timedelta(days=1)
+                    if d.weekday() < 5:
+                        future_dates.append(d)
+                future = pd.DataFrame({'ds': future_dates})
+                forecast = model.predict(future)
+                return {
+                    'dates': [d.timestamp() for d in df['ds']] + [d.timestamp() for d in future_dates],
+                    'actuals': df['y'].tolist(),
+                    'predictions': forecast['yhat'].tolist(),
+                    'pred_dates': [d.timestamp() for d in future_dates],
+                    'lower': forecast['yhat_lower'].tolist(),
+                    'upper': forecast['yhat_upper'].tolist()
+                }
+            else:
+                return None
+        # Use available data (>=5 rows)
         df = hist.reset_index()
         df = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
         df['ds'] = df['ds'].dt.tz_localize(None)
         df = df.dropna()
         model = Prophet(yearly_seasonality=False, weekly_seasonality=False, daily_seasonality=False, changepoint_prior_scale=0.01)
         model.fit(df)
+        # Son 5 iş gününü al
+        last5_hist = hist[hist.index.dayofweek < 5].tail(5)
+        # Sonraki 5 iş günü için tahmin
         last_date = df['ds'].max()
-        next_trading_day = get_next_trading_day(last_date)
-        future = pd.DataFrame({'ds': [next_trading_day]})
+        future_dates = []
+        d = last_date
+        while len(future_dates) < 5:
+            d += pd.Timedelta(days=1)
+            if d.weekday() < 5:
+                future_dates.append(d)
+        future = pd.DataFrame({'ds': future_dates})
         forecast = model.predict(future)
-        # Son 5 günün kapanış fiyatı
-        last5_hist = hist.tail(5)
         return {
-            'dates': [d.timestamp() for d in last5_hist.index] + [next_trading_day.timestamp()],
+            'dates': [d.timestamp() for d in last5_hist.index] + [d.timestamp() for d in future_dates],
             'actuals': last5_hist['Close'].tolist(),
-            'predictions': [forecast['yhat'].iloc[0]],
-            'pred_date': next_trading_day.timestamp(),
-            'lower': [forecast['yhat_lower'].iloc[0]],
-            'upper': [forecast['yhat_upper'].iloc[0]]
+            'predictions': forecast['yhat'].tolist(),
+            'pred_dates': [d.timestamp() for d in future_dates],
+            'lower': forecast['yhat_lower'].tolist(),
+            'upper': forecast['yhat_upper'].tolist()
         }
     except Exception as e:
         print(f"Prophet forecast exception for {symbol}: {e}")
@@ -1003,35 +1041,32 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
 
             # Tahmin verisini al
             if forecast_method == 'prophet':
-                forecast_data = get_forecast_prophet(hisse, days=1)
+                forecast_data = get_forecast_prophet(hisse, days=5)
             elif forecast_method == 'arima':
-                forecast_data = get_forecast_arima(hisse, days=1)
+                forecast_data = get_forecast_arima(hisse, days=5)
             elif forecast_method == 'lstm':
-                forecast_data = get_forecast_lstm(hisse, days=1)
+                forecast_data = get_forecast_lstm(hisse, days=5)
             else:
-                forecast_data = get_forecast_prophet(hisse, days=1)
+                forecast_data = get_forecast_prophet(hisse, days=5)
 
-            if forecast_data:
-                # Prophet fonksiyonu son 5 gün actuals ve 1 günlük tahmini içeriyor
+            if forecast_data and forecast_data.get('predictions'):
                 dates = [datetime.fromtimestamp(ts) for ts in forecast_data['dates']]
                 actuals = forecast_data.get('actuals', [])
-                pred = forecast_data['predictions'][0]
+                preds = forecast_data['predictions']
+                lowers = forecast_data.get('lower', [])
+                uppers = forecast_data.get('upper', [])
 
-                plt.figure(figsize=(8, 5))
+                plt.figure(figsize=(10, 6))
                 # Son 5 gün mavi çizgi
                 if actuals:
-                    plt.plot(dates[:-1], actuals, marker='o', color='blue', label='Son 5 Gün Fiyatı')
-                # Tahmin edilen gün kırmızı nokta
-                plt.plot([dates[-1]], [pred], marker='o', color='red', label='Tahmin (1 gün sonrası)')
+                    plt.plot(dates[:len(actuals)], actuals, marker='o', color='blue', label='Son Günler Fiyatı')
+                # Tahmin edilen günler kırmızı çizgi
+                plt.plot(dates[len(actuals):], preds, marker='o', color='red', label='Tahmin (Sonraki 5 İş Günü)')
                 # Prophet güven aralığı
-                if 'lower' in forecast_data and 'upper' in forecast_data:
-                    plt.errorbar(
-                        [dates[-1]], [pred],
-                        yerr=[[pred - forecast_data['lower'][0]], [forecast_data['upper'][0] - pred]],
-                        fmt='o', color='red', alpha=0.3, label='Güven Aralığı'
-                    )
+                if lowers and uppers:
+                    plt.fill_between(dates[len(actuals):], lowers, uppers, alpha=0.2, color='red', label='Güven Aralığı')
 
-                plt.title(f"{hisse} Son 5 Gün ve 1 Günlük Tahmin ({forecast_method.upper()})", fontsize=13, fontweight='bold')
+                plt.title(f"{hisse} Son Günler ve 5 İş Günü Tahmini ({forecast_method.upper()})", fontsize=13, fontweight='bold')
                 plt.xlabel('Tarih', fontsize=11)
                 plt.ylabel('Fiyat (TL)', fontsize=11)
                 plt.grid(True, alpha=0.3)
@@ -1044,16 +1079,39 @@ async def ask_question(question: str = Form(...), language: str = Form("tr")):
                 buf.seek(0)
                 chart_b64 = base64.b64encode(buf.read()).decode('utf-8')
 
-                date_str = dates[-1].strftime('%d.%m.%Y')
                 answer = (
-                    f"🔮 {hisse} 1 GÜN SONRAKİ TAHMİN ({forecast_method.upper()}):\n\n📊 {date_str} tahmini: {pred:.2f} TL\n⚠️ Bu tahminler sadece referans amaçlıdır!"
+                    f"🔮 {hisse} 5 İŞ GÜNÜ TAHMİNİ ({forecast_method.upper()}):\n\n" +
+                    "\n".join([f"📊 {dates[len(actuals)+i].strftime('%d.%m.%Y')}: {preds[i]:.2f} TL" for i in range(len(preds))]) +
+                    "\n⚠️ Bu tahminler sadece referans amaçlıdır!"
                     if language == 'tr'
-                    else f"🔮 {hisse} 1 DAY FORECAST ({forecast_method.upper()}):\n\n📊 Prediction for {date_str}: {pred:.2f} TL\n⚠️ These predictions are for reference only!"
+                    else f"🔮 {hisse} 5 BUSINESS DAY FORECAST ({forecast_method.upper()}):\n\n" +
+                    "\n".join([f"📊 {dates[len(actuals)+i].strftime('%d.%m.%Y')}: {preds[i]:.2f} TL" for i in range(len(preds))]) +
+                    "\n⚠️ These predictions are for reference only!"
                 )
                 return {"answer": answer, "chart": chart_b64}
             else:
-                answer = f"❌ {hisse} için tahmin yapılamadı. Yeterli veri yok." if language == 'tr' else f"❌ Could not forecast {hisse}. Insufficient data."
-                return {"answer": answer, "chart": None}
+                # If there is any actual data, show it as a chart
+                if forecast_data and forecast_data.get('actuals'):
+                    dates = [datetime.fromtimestamp(ts) for ts in forecast_data['dates']]
+                    actuals = forecast_data.get('actuals', [])
+                    plt.figure(figsize=(8, 5))
+                    plt.plot(dates[:len(actuals)], actuals, marker='o', color='blue', label='Son Günler Fiyatı')
+                    plt.title(f"{hisse} Son Günler Fiyatı", fontsize=13, fontweight='bold')
+                    plt.xlabel('Tarih', fontsize=11)
+                    plt.ylabel('Fiyat (TL)', fontsize=11)
+                    plt.grid(True, alpha=0.3)
+                    plt.legend()
+                    plt.tight_layout()
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format='png', dpi=200, bbox_inches='tight')
+                    plt.close()
+                    buf.seek(0)
+                    chart_b64 = base64.b64encode(buf.read()).decode('utf-8')
+                    answer = f"❌ {hisse} için yeterli tahmin verisi yok, sadece son günler gösteriliyor." if language == 'tr' else f"❌ Not enough forecast data for {hisse}, showing only recent days."
+                    return {"answer": answer, "chart": chart_b64}
+                else:
+                    answer = f"❌ {hisse} için tahmin yapılamadı. Hiç veri yok." if language == 'tr' else f"❌ Could not forecast {hisse}. No data available."
+                    return {"answer": answer, "chart": None}
 
         except Exception as e:
             print(f"Error processing forecast request: {e}")

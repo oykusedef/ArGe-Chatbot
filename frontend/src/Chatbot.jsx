@@ -44,18 +44,13 @@ const Chatbot = () => {
   const [messages, setMessages] = useState([
     { sender: 'bot', text: `Merhaba! Ben FINBOT.
 
-🤖 FINBOT Size Nasıl Yardımcı Olabilir? Hangi şirketler mevcut diye sorabilirsiniz.
+🤖 FINBOT Size Nasıl Yardımcı Olabilir?
 
 📈 Güncel fiyat: 'ARCLK güncel fiyat'
 📊 Grafik: 'ARCLK grafik' veya 'ARCLK 3 ay grafik'
 🔮 Tahmin: 'ARCLK tahmin' veya 'ARCLK forecast'
-📰 Sentiment: 'ASELS medya analizi' veya 'ASELS haber analizi'
+📰 Sentiment Analizi: 'ASELS medya analizi' veya 'ASELS haber analizi'
 💼 Yatırım tavsiyesi: '1000 TL ne alayım' veya 'portföy önerisi'
-📋 Hisse listesi: 'Hangi şirketler mevcut'
-💡 Grafik süreleri: 1 ay, 3 ay, 6 ay, 1 yıl
-💡 Tahmin yöntemleri: Prophet, ARIMA, LSTM
-💡 Risk profilleri: Düşük, Orta, Yüksek
-📰 Sentiment analizi: Son haberler
 🤖 Otomatik Strateji: 'ARCLK otomatik strateji' veya 'ASELS al/tut/sat önerisi'`
  }
   ]);
